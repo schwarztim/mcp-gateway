@@ -1,0 +1,27 @@
+{
+  "name": "mcp-gateway",
+  "version": "1.0.0",
+  "description": "MCP proxy/gateway that aggregates multiple MCP servers behind a single SSE/HTTP endpoint",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "express": "^4.21.0",
+    "yaml": "^2.6.1",
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0",
+    "chokidar": "^4.0.3",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
