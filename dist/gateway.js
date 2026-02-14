@@ -324,7 +324,7 @@ export class Gateway {
     }
     async reloadConfig() {
         this.logger.info("Reloading configuration...");
-        const newConfig = loadConfig(this.configPath);
+        const newConfig = await loadConfig(this.configPath);
         // Find backends to add, remove, or update
         const currentNames = new Set(this.backends.keys());
         const newNames = new Set(Object.keys(newConfig.backends));
