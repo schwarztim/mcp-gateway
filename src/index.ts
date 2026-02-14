@@ -6,7 +6,7 @@ import { Gateway } from "./gateway.js";
 const configPath = resolve(process.env.MCP_GATEWAY_CONFIG ?? "config.yaml");
 
 async function main() {
-  const config = loadConfig(configPath);
+  const config = await loadConfig(configPath);
   const logger = createLogger(config.gateway.log_level);
 
   logger.info(`Loading config from ${configPath}`);

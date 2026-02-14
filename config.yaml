@@ -1,6 +1,7 @@
 # MCP Gateway — Production Configuration
 # Aggregates all MCP backends behind a single SSE/HTTP endpoint.
-# Backends using launch-secure.sh pull secrets from macOS Keychain at runtime.
+# Secrets use vault: references resolved from HashiCorp Vault at startup.
+# Syntax: vault:mcp/<path>#<key>  →  resolves to secret/data/mcp/<path>
 
 gateway:
   port: 3100
@@ -17,7 +18,7 @@ backends:
     command: "node"
     args: ["/Users/timothy.schwarz/Scripts/mcp-servers/servicenow-mcp/dist/index.js"]
     env:
-      SERVICENOW_INSTANCE_URL: "https://qvcprod.service-now.com"
+      SERVICENOW_INSTANCE_URL: "vault:mcp/servicenow#instance_url"
     namespace: "servicenow"
     enabled: true
     restart_policy: "on-failure"
@@ -36,8 +37,13 @@ backends:
 
   epm-timesheet:
     transport: stdio
-    command: "bash"
-    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/epm-timesheet-mcp/launch-secure.sh"]
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/epm-timesheet-mcp/dist/index.js"]
+    env:
+      EPM_URL: "vault:mcp/epm-timesheet#url"
+      EPM_USERNAME: "vault:mcp/epm-timesheet#username"
+      EPM_DOMAIN: "vault:mcp/epm-timesheet#domain"
+      EPM_PASSWORD: "vault:mcp/qvc-sso#password"
     namespace: "epm"
     enabled: true
     restart_policy: "on-failure"
@@ -46,8 +52,12 @@ backends:
 
   atlassian:
     transport: stdio
-    command: "bash"
-    args: ["/Users/timothy.schwarz/.claude/plugins/atlassian-api-plugin/mcp-server/launch-secure.sh"]
+    command: "node"
+    args: ["/Users/timothy.schwarz/.claude/plugins/atlassian-api-plugin/mcp-server/index.js"]
+    env:
+      JIRA_URL: "https://qurate.atlassian.net"
+      JIRA_EMAIL: "vault:mcp/atlassian#email"
+      JIRA_API_TOKEN: "vault:mcp/atlassian#api_token"
     namespace: "atlassian"
     enabled: true
     restart_policy: "on-failure"
@@ -91,7 +101,7 @@ backends:
     command: "node"
     args: ["/Users/timothy.schwarz/Scripts/mcp-servers/venafi-mcp/dist/index.js"]
     env:
-      VENAFI_BASE_URL: "https://venafi.qvcdev.qvc.net"
+      VENAFI_BASE_URL: "vault:mcp/venafi#base_url"
     namespace: "venafi"
     enabled: true
     restart_policy: "on-failure"
@@ -106,10 +116,10 @@ backends:
     args: ["/Users/timothy.schwarz/akamai-mcp-server/dist/index.js"]
     cwd: "/Users/timothy.schwarz/akamai-mcp-server"
     env:
-      AKAMAI_HOST: "akab-l5svumwsdbgwkf6p-fwaxidtnf2zuhssx.luna.akamaiapis.net"
-      AKAMAI_CLIENT_TOKEN: "akab-2ekkdnatjwnoz3aa-jw6usbnfvdrqkfir"
-      AKAMAI_CLIENT_SECRET: "ZuergclAyqNzuIZ2tomRwJgnMQdEholJ8ARGML3yVC4="
-      AKAMAI_ACCESS_TOKEN: "akab-vlpbd3pmjw7qegkj-d3aqadrqx5wvn7s7"
+      AKAMAI_HOST: "vault:mcp/akamai#host"
+      AKAMAI_CLIENT_TOKEN: "vault:mcp/akamai#client_token"
+      AKAMAI_CLIENT_SECRET: "vault:mcp/akamai#client_secret"
+      AKAMAI_ACCESS_TOKEN: "vault:mcp/akamai#access_token"
       LOG_LEVEL: "info"
       AKAMAI_TOOL_MODE: "composite"
     namespace: "akamai"
@@ -132,8 +142,13 @@ backends:
 
   confluence:
     transport: stdio
-    command: "bash"
-    args: ["/Users/timothy.schwarz/Scripts/confluence-knowledge-graph/mcp-server/launch-secure.sh"]
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/confluence-knowledge-graph/mcp-server/dist/index.js"]
+    env:
+      CONFLUENCE_BASE_URL: "https://qurate.atlassian.net"
+      CONFLUENCE_EMAIL: "vault:mcp/qvc-sso#email"
+      CONFLUENCE_API_TOKEN: "vault:mcp/confluence#api_token"
+      STORAGE_PATH: "/Users/timothy.schwarz/Scripts/confluence-knowledge-graph/storage"
     namespace: "confluence"
     enabled: false  # dist not built yet
     restart_policy: "on-failure"
@@ -164,8 +179,16 @@ backends:
 
   bambu-lab:
     transport: stdio
-    command: "bash"
-    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/bambu-lab-mcp/launch-secure.sh"]
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/bambu-lab-mcp/dist/index.js"]
+    env:
+      BAMBU_LAB_MQTT_HOST: "vault:mcp/bambu-lab#mqtt_host"
+      BAMBU_LAB_MQTT_PASSWORD: "vault:mcp/bambu-lab#mqtt_password"
+      BAMBU_LAB_DEVICE_ID: "vault:mcp/bambu-lab#device_id"
+      AZURE_OPENAI_API_KEY: "vault:mcp/bambu-lab#azure_openai_api_key"
+      AZURE_OPENAI_ENDPOINT: "https://openai-qrg-sandbox-experiment.cognitiveservices.azure.com"
+      AZURE_OPENAI_DEPLOYMENT: "qrg-gpt-4.1-mini"
+      AZURE_OPENAI_API_VERSION: "2025-01-01-preview"
     namespace: "bambu"
     enabled: true
     restart_policy: "on-failure"
