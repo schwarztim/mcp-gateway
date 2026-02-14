@@ -1,42 +1,204 @@
-# MCP Gateway — Example Configuration
-# All ${VAR} references are resolved from environment variables at load time.
+# MCP Gateway — Production Configuration
+# Aggregates all MCP backends behind a single SSE/HTTP endpoint.
+# Backends using launch-secure.sh pull secrets from macOS Keychain at runtime.
 
 gateway:
   port: 3100
   host: "0.0.0.0"
   name: "mcp-gateway"
-  log_level: "info"        # debug | info | warn | error
+  log_level: "info"
 
 backends:
-  # Example: stdio-based MCP backend
-  # servicenow:
-  #   transport: stdio
-  #   command: "node"
-  #   args: ["dist/index.js"]
-  #   cwd: "/app/mcps/servicenow"
-  #   env:
-  #     SERVICENOW_INSTANCE_URL: "${SERVICENOW_INSTANCE_URL}"
-  #   namespace: "sn"
-  #   enabled: true
-  #   restart_policy: "on-failure"    # always | on-failure | never
-  #   max_restarts: 5
-  #   health_check_interval: 30
 
-  # Example: SSE-based remote MCP backend
-  # akamai:
-  #   transport: sse
-  #   url: "http://localhost:3001/sse"
-  #   namespace: "akamai"
-  #   enabled: true
-  #   reconnect_interval: 5
-  #   headers:
-  #     Authorization: "Bearer ${AKAMAI_TOKEN}"
+  # ─── Core Work MCPs ───────────────────────────────────────────────
 
-  # A simple echo backend for testing
+  servicenow:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/servicenow-mcp/dist/index.js"]
+    env:
+      SERVICENOW_INSTANCE_URL: "https://qvcprod.service-now.com"
+    namespace: "servicenow"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 5
+    health_check_interval: 30
+
+  ms365:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/ms365-mcp/dist/index.js"]
+    namespace: "ms365"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 5
+    health_check_interval: 30
+
+  epm-timesheet:
+    transport: stdio
+    command: "bash"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/epm-timesheet-mcp/launch-secure.sh"]
+    namespace: "epm"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 60
+
+  atlassian:
+    transport: stdio
+    command: "bash"
+    args: ["/Users/timothy.schwarz/.claude/plugins/atlassian-api-plugin/mcp-server/launch-secure.sh"]
+    namespace: "atlassian"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 30
+
+  copilot-studio:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/copilot-studio-mcp/dist/index.js"]
+    namespace: "copilot-studio"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 30
+
+  # ─── Security MCPs ────────────────────────────────────────────────
+
+  crowdstrike:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/crowdstrike-ralph-mcp/dist/index.js"]
+    namespace: "crowdstrike"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 30
+
+  trufflehog:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/trufflehog-mcp/dist/index.js"]
+    namespace: "trufflehog"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 60
+
+  venafi:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/venafi-mcp/dist/index.js"]
+    env:
+      VENAFI_BASE_URL: "https://venafi.qvcdev.qvc.net"
+    namespace: "venafi"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 60
+
+  # ─── Infrastructure MCPs ──────────────────────────────────────────
+
+  akamai:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/akamai-mcp-server/dist/index.js"]
+    cwd: "/Users/timothy.schwarz/akamai-mcp-server"
+    env:
+      AKAMAI_HOST: "akab-l5svumwsdbgwkf6p-fwaxidtnf2zuhssx.luna.akamaiapis.net"
+      AKAMAI_CLIENT_TOKEN: "akab-2ekkdnatjwnoz3aa-jw6usbnfvdrqkfir"
+      AKAMAI_CLIENT_SECRET: "ZuergclAyqNzuIZ2tomRwJgnMQdEholJ8ARGML3yVC4="
+      AKAMAI_ACCESS_TOKEN: "akab-vlpbd3pmjw7qegkj-d3aqadrqx5wvn7s7"
+      LOG_LEVEL: "info"
+      AKAMAI_TOOL_MODE: "composite"
+    namespace: "akamai"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 30
+
+  tufin:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/tufin-mcp/dist/index.js"]
+    namespace: "tufin"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 60
+
+  # ─── DevOps MCPs ──────────────────────────────────────────────────
+
+  confluence:
+    transport: stdio
+    command: "bash"
+    args: ["/Users/timothy.schwarz/Scripts/confluence-knowledge-graph/mcp-server/launch-secure.sh"]
+    namespace: "confluence"
+    enabled: false  # dist not built yet
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 60
+
+  mcp-forge:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/mcp-forge/dist/mcp-server/index.js"]
+    namespace: "forge"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 60
+
+  thesun:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/thesun/dist/mcp-server/index.js"]
+    namespace: "thesun"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 60
+
+  # ─── IoT / Home MCPs ──────────────────────────────────────────────
+
+  bambu-lab:
+    transport: stdio
+    command: "bash"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/bambu-lab-mcp/launch-secure.sh"]
+    namespace: "bambu"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 60
+
+  android:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/android-mcp/index.js"]
+    namespace: "android"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    health_check_interval: 60
+
+  # ─── Enhanced / Alternate MCPs ────────────────────────────────────
+
+  ms365-enhanced:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/ms365-mcp-enhanced/dist/index.js"]
+    namespace: "ms365e"
+    enabled: false  # disabled by default — conflicts with ms365
+    restart_policy: "on-failure"
+    max_restarts: 3
+
+  # ─── Test Backend ─────────────────────────────────────────────────
+
   echo:
     transport: stdio
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-everything"]
     namespace: "echo"
-    enabled: true
+    enabled: false  # disable for production use
     restart_policy: "on-failure"
