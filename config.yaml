@@ -1,0 +1,42 @@
+# MCP Gateway — Example Configuration
+# All ${VAR} references are resolved from environment variables at load time.
+
+gateway:
+  port: 3100
+  host: "0.0.0.0"
+  name: "mcp-gateway"
+  log_level: "info"        # debug | info | warn | error
+
+backends:
+  # Example: stdio-based MCP backend
+  # servicenow:
+  #   transport: stdio
+  #   command: "node"
+  #   args: ["dist/index.js"]
+  #   cwd: "/app/mcps/servicenow"
+  #   env:
+  #     SERVICENOW_INSTANCE_URL: "${SERVICENOW_INSTANCE_URL}"
+  #   namespace: "sn"
+  #   enabled: true
+  #   restart_policy: "on-failure"    # always | on-failure | never
+  #   max_restarts: 5
+  #   health_check_interval: 30
+
+  # Example: SSE-based remote MCP backend
+  # akamai:
+  #   transport: sse
+  #   url: "http://localhost:3001/sse"
+  #   namespace: "akamai"
+  #   enabled: true
+  #   reconnect_interval: 5
+  #   headers:
+  #     Authorization: "Bearer ${AKAMAI_TOKEN}"
+
+  # A simple echo backend for testing
+  echo:
+    transport: stdio
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-everything"]
+    namespace: "echo"
+    enabled: true
+    restart_policy: "on-failure"
