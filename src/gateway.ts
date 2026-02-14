@@ -211,7 +211,8 @@ export class Gateway {
   }
 
   private setupHttpRoutes(): void {
-    this.app.use(express.json());
+    // Apply JSON parsing only to admin routes (not /messages — SSE transport reads raw body)
+    this.app.use("/admin", express.json());
 
     // SSE endpoint for MCP clients
     this.app.get("/sse", async (req: Request, res: Response) => {

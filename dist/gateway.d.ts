@@ -9,6 +9,7 @@ export declare class Gateway {
     private backends;
     private transports;
     private server;
+    private healthTimer?;
     constructor(config: Config, configPath: string, logger: Logger);
     private setupMcpHandlers;
     private setupHttpRoutes;
@@ -17,5 +18,6 @@ export declare class Gateway {
     reloadConfig(): Promise<void>;
     start(): Promise<void>;
     stop(): Promise<void>;
+    private startHealthMonitor;
 }
 //# sourceMappingURL=gateway.d.ts.map

@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { ListToolsRequestSchema, CallToolRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
 import express from "express";
 import { ToolRegistry } from "./tool-registry.js";
 import { BackendInstance } from "./backend.js";
@@ -14,22 +15,23 @@ export class Gateway {
     backends = new Map();
     transports = new Map();
     server;
+    healthTimer;
     constructor(config, configPath, logger) {
         this.config = config;
         this.configPath = configPath;
         this.logger = logger;
         this.toolRegistry = new ToolRegistry(logger);
-        this.server = new McpServer({ name: config.gateway.name, version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+        this.server = new McpServer({ name: config.gateway.name, version: "1.0.0" }, { capabilities: { tools: { listChanged: true }, resources: {}, prompts: {} } });
         this.setupMcpHandlers();
         this.setupHttpRoutes();
     }
     setupMcpHandlers() {
         // We override the tool list handler on the underlying Server
         const lowLevel = this.server.server;
-        lowLevel.setRequestHandler({ method: "tools/list" }, async () => {
+        lowLevel.setRequestHandler(ListToolsRequestSchema, async () => {
             return { tools: this.toolRegistry.getAllTools() };
         });
-        lowLevel.setRequestHandler({ method: "tools/call" }, async (request) => {
+        lowLevel.setRequestHandler(CallToolRequestSchema, async (request) => {
             const toolName = request.params.name;
             const args = request.params.arguments ?? {};
             const entry = this.toolRegistry.resolve(toolName);
@@ -72,9 +74,104 @@ export class Gateway {
                 };
             }
         });
+        // Resource handlers
+        lowLevel.setRequestHandler(ListResourcesRequestSchema, async () => {
+            const allResources = [];
+            for (const [name, backend] of this.backends) {
+                if (backend.status !== "connected")
+                    continue;
+                try {
+                    const resources = await backend.listResources();
+                    const ns = this.config.backends[name]?.namespace ?? name;
+                    for (const r of resources) {
+                        allResources.push({ ...r, name: `${ns}_${r.name}` });
+                    }
+                }
+                catch {
+                    // skip backends that don't support resources
+                }
+            }
+            return { resources: allResources };
+        });
+        lowLevel.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+            const uri = request.params.uri;
+            // Try each backend until one handles the URI
+            for (const [, backend] of this.backends) {
+                if (backend.status !== "connected")
+                    continue;
+                try {
+                    const result = await backend.readResource(uri);
+                    return result;
+                }
+                catch {
+                    // try next
+                }
+            }
+            return { contents: [{ uri, text: `Resource not found: ${uri}` }] };
+        });
+        // Prompt handlers
+        lowLevel.setRequestHandler(ListPromptsRequestSchema, async () => {
+            const allPrompts = [];
+            for (const [name, backend] of this.backends) {
+                if (backend.status !== "connected")
+                    continue;
+                try {
+                    const prompts = await backend.listPrompts();
+                    const ns = this.config.backends[name]?.namespace ?? name;
+                    for (const p of prompts) {
+                        allPrompts.push({ ...p, name: `${ns}_${p.name}` });
+                    }
+                }
+                catch {
+                    // skip backends that don't support prompts
+                }
+            }
+            return { prompts: allPrompts };
+        });
+        lowLevel.setRequestHandler(GetPromptRequestSchema, async (request) => {
+            const promptName = request.params.name;
+            // Find the backend by namespace prefix
+            for (const [name, backend] of this.backends) {
+                if (backend.status !== "connected")
+                    continue;
+                const ns = this.config.backends[name]?.namespace ?? name;
+                if (promptName.startsWith(`${ns}_`)) {
+                    const originalName = promptName.slice(ns.length + 1);
+                    try {
+                        const result = await backend.getPrompt(originalName, request.params.arguments);
+                        return result;
+                    }
+                    catch (err) {
+                        return {
+                            messages: [
+                                {
+                                    role: "assistant",
+                                    content: {
+                                        type: "text",
+                                        text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+                                    },
+                                },
+                            ],
+                        };
+                    }
+                }
+            }
+            return {
+                messages: [
+                    {
+                        role: "assistant",
+                        content: {
+                            type: "text",
+                            text: `Unknown prompt: ${promptName}`,
+                        },
+                    },
+                ],
+            };
+        });
     }
     setupHttpRoutes() {
-        this.app.use(express.json());
+        // Apply JSON parsing only to admin routes (not /messages — SSE transport reads raw body)
+        this.app.use("/admin", express.json());
         // SSE endpoint for MCP clients
         this.app.get("/sse", async (req, res) => {
             this.logger.info(`New SSE connection from ${req.ip}`);
@@ -260,6 +357,8 @@ export class Gateway {
         await Promise.allSettled(entries.map(([name, config]) => this.connectBackend(name, config)));
         const connected = Array.from(this.backends.values()).filter((b) => b.status === "connected").length;
         this.logger.info(`${connected}/${entries.length} backends connected, ${this.toolRegistry.getAllTools().length} tools available`);
+        // Start health monitoring
+        this.startHealthMonitor();
         // Watch config file for changes
         const watcher = watch(this.configPath, {
             ignoreInitial: true,
@@ -286,6 +385,8 @@ export class Gateway {
     }
     async stop() {
         this.logger.info("Shutting down gateway...");
+        if (this.healthTimer)
+            clearInterval(this.healthTimer);
         for (const backend of this.backends.values()) {
             await backend.disconnect();
         }
@@ -297,6 +398,28 @@ export class Gateway {
                 // ignore
             }
         }
+    }
+    startHealthMonitor() {
+        const interval = 30_000; // 30 seconds
+        this.healthTimer = setInterval(async () => {
+            for (const [name, backend] of this.backends) {
+                if (backend.status === "disconnected" || backend.status === "error") {
+                    this.logger.info(`Health check: backend "${name}" is ${backend.status}, attempting reconnect...`);
+                    try {
+                        await backend.restart();
+                        if (backend.status === "connected") {
+                            const backendConfig = this.config.backends[name];
+                            this.toolRegistry.registerBackend(name, backendConfig.namespace, backend.tools);
+                            this.notifyToolsChanged();
+                            this.logger.info(`Health check: backend "${name}" reconnected — ${backend.tools.length} tools`);
+                        }
+                    }
+                    catch {
+                        this.logger.warn(`Health check: backend "${name}" reconnect failed`);
+                    }
+                }
+            }
+        }, interval);
     }
 }
 //# sourceMappingURL=gateway.js.map
