@@ -25,7 +25,7 @@ export class Gateway {
   private toolRegistry: ToolRegistry;
   private backends = new Map<string, BackendInstance>();
   private transports = new Map<string, SSEServerTransport>();
-  private server: McpServer;
+  private sessions = new Map<string, McpServer>();
 
   private healthTimer?: ReturnType<typeof setInterval>;
 
@@ -35,18 +35,20 @@ export class Gateway {
     this.logger = logger;
     this.toolRegistry = new ToolRegistry(logger);
 
-    this.server = new McpServer(
-      { name: config.gateway.name, version: "1.0.0" },
-      { capabilities: { tools: { listChanged: true }, resources: {}, prompts: {} } }
-    );
-
-    this.setupMcpHandlers();
     this.setupHttpRoutes();
   }
 
-  private setupMcpHandlers(): void {
-    // We override the tool list handler on the underlying Server
-    const lowLevel = this.server.server;
+  private createSessionServer(): McpServer {
+    const server = new McpServer(
+      { name: this.config.gateway.name, version: "1.0.0" },
+      { capabilities: { tools: { listChanged: true }, resources: {}, prompts: {} } }
+    );
+    this.setupMcpHandlers(server);
+    return server;
+  }
+
+  private setupMcpHandlers(mcpServer: McpServer): void {
+    const lowLevel = mcpServer.server;
 
     lowLevel.setRequestHandler(
       ListToolsRequestSchema,
@@ -221,12 +223,16 @@ export class Gateway {
       const sessionId = transport.sessionId;
       this.transports.set(sessionId, transport);
 
+      const sessionServer = this.createSessionServer();
+      this.sessions.set(sessionId, sessionServer);
+
       transport.onclose = () => {
         this.transports.delete(sessionId);
+        this.sessions.delete(sessionId);
         this.logger.debug(`SSE session ${sessionId} closed`);
       };
 
-      await this.server.server.connect(transport);
+      await sessionServer.server.connect(transport);
     });
 
     // Message endpoint for MCP clients
@@ -364,9 +370,9 @@ export class Gateway {
 
   private notifyToolsChanged(): void {
     // Notify all connected SSE clients that tool list changed
-    for (const transport of this.transports.values()) {
+    for (const [sessionId, sessionServer] of this.sessions) {
       try {
-        this.server.server
+        sessionServer.server
           .notification({
             method: "notifications/tools/list_changed",
           })
@@ -494,6 +500,13 @@ export class Gateway {
     if (this.healthTimer) clearInterval(this.healthTimer);
     for (const backend of this.backends.values()) {
       await backend.disconnect();
+    }
+    for (const [sessionId, sessionServer] of this.sessions) {
+      try {
+        await sessionServer.close();
+      } catch {
+        // ignore
+      }
     }
     for (const transport of this.transports.values()) {
       try {

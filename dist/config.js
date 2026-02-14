@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
+import Vault from "node-vault";
 const StdioBackendSchema = z.object({
     transport: z.literal("stdio"),
     command: z.string(),
@@ -63,10 +64,65 @@ function resolveEnvInObject(obj) {
     }
     return obj;
 }
-export function loadConfig(filePath) {
+/** Vault secret cache to avoid redundant fetches */
+const vaultCache = new Map();
+/**
+ * Resolve vault:path#key references.
+ * Syntax: vault:secret/mcp/akamai#client_secret
+ * Or shorthand: vault:mcp/akamai#client_secret (auto-prefixes secret/)
+ */
+async function resolveVaultRef(ref) {
+    const match = ref.match(/^vault:(.+)#(.+)$/);
+    if (!match)
+        throw new Error(`Invalid vault reference: ${ref}`);
+    let [, path, key] = match;
+    // Shorthand: vault:mcp/x#y → secret/data/mcp/x
+    if (!path.startsWith("secret/")) {
+        path = `secret/data/${path}`;
+    }
+    else if (!path.includes("/data/")) {
+        // vault:secret/mcp/x#y → secret/data/mcp/x
+        path = path.replace("secret/", "secret/data/");
+    }
+    if (!vaultCache.has(path)) {
+        const vaultAddr = process.env.VAULT_ADDR || "http://127.0.0.1:8200";
+        const vaultToken = process.env.VAULT_TOKEN;
+        if (!vaultToken)
+            throw new Error("VAULT_TOKEN environment variable is required for vault: references");
+        const client = Vault({ endpoint: vaultAddr, token: vaultToken });
+        const result = await client.read(path);
+        vaultCache.set(path, result.data?.data || result.data || {});
+    }
+    const data = vaultCache.get(path);
+    if (!(key in data)) {
+        throw new Error(`Vault secret at ${path} does not contain key "${key}". Available: ${Object.keys(data).join(", ")}`);
+    }
+    return data[key];
+}
+/** Recursively resolve vault: refs in an object */
+async function resolveVaultInObject(obj) {
+    if (typeof obj === "string" && obj.startsWith("vault:")) {
+        return resolveVaultRef(obj);
+    }
+    if (Array.isArray(obj)) {
+        return Promise.all(obj.map(resolveVaultInObject));
+    }
+    if (obj && typeof obj === "object") {
+        const result = {};
+        for (const [k, v] of Object.entries(obj)) {
+            result[k] = await resolveVaultInObject(v);
+        }
+        return result;
+    }
+    return obj;
+}
+export async function loadConfig(filePath) {
     const raw = readFileSync(filePath, "utf-8");
     const parsed = parseYaml(raw);
-    const resolved = resolveEnvInObject(parsed);
-    return ConfigFileSchema.parse(resolved);
+    // First resolve env vars, then resolve vault references
+    const envResolved = resolveEnvInObject(parsed);
+    const vaultResolved = await resolveVaultInObject(envResolved);
+    vaultCache.clear(); // free memory after load
+    return ConfigFileSchema.parse(vaultResolved);
 }
 //# sourceMappingURL=config.js.map

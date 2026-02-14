@@ -267,6 +267,6 @@ export type SseBackendConfig = z.infer<typeof SseBackendSchema>;
 export type BackendConfig = z.infer<typeof BackendSchema>;
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema>;
 export type Config = z.infer<typeof ConfigFileSchema>;
-export declare function loadConfig(filePath: string): Config;
+export declare function loadConfig(filePath: string): Promise<Config>;
 export {};
 //# sourceMappingURL=config.d.ts.map
