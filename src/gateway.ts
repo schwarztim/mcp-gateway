@@ -33,7 +33,7 @@ export class Gateway {
     this.config = config;
     this.configPath = configPath;
     this.logger = logger;
-    this.toolRegistry = new ToolRegistry(logger);
+    this.toolRegistry = new ToolRegistry(logger, config.gateway.tool_prefix);
 
     this.setupHttpRoutes();
   }
@@ -116,8 +116,9 @@ export class Gateway {
           try {
             const resources = await backend.listResources();
             const ns = this.config.backends[name]?.namespace ?? name;
+            const prefix = this.config.gateway.tool_prefix ? `${this.config.gateway.tool_prefix}${ns}` : ns;
             for (const r of resources) {
-              allResources.push({ ...r, name: `${ns}_${r.name}` });
+              allResources.push({ ...r, name: `${prefix}_${r.name}` });
             }
           } catch {
             // skip backends that don't support resources
@@ -155,8 +156,9 @@ export class Gateway {
           try {
             const prompts = await backend.listPrompts();
             const ns = this.config.backends[name]?.namespace ?? name;
+            const prefix = this.config.gateway.tool_prefix ? `${this.config.gateway.tool_prefix}${ns}` : ns;
             for (const p of prompts) {
-              allPrompts.push({ ...p, name: `${ns}_${p.name}` });
+              allPrompts.push({ ...p, name: `${prefix}_${p.name}` });
             }
           } catch {
             // skip backends that don't support prompts
@@ -174,8 +176,9 @@ export class Gateway {
         for (const [name, backend] of this.backends) {
           if (backend.status !== "connected") continue;
           const ns = this.config.backends[name]?.namespace ?? name;
-          if (promptName.startsWith(`${ns}_`)) {
-            const originalName = promptName.slice(ns.length + 1);
+          const prefix = this.config.gateway.tool_prefix ? `${this.config.gateway.tool_prefix}${ns}` : ns;
+          if (promptName.startsWith(`${prefix}_`)) {
+            const originalName = promptName.slice(prefix.length + 1);
             try {
               const result = await backend.getPrompt(
                 originalName,

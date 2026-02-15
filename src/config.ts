@@ -38,6 +38,7 @@ const GatewayConfigSchema = z.object({
   host: z.string().default("0.0.0.0"),
   name: z.string().default("mcp-gateway"),
   log_level: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  tool_prefix: z.string().default(""),
 });
 
 const ConfigFileSchema = z.object({

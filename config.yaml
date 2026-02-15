@@ -8,6 +8,7 @@ gateway:
   host: "0.0.0.0"
   name: "mcp-gateway"
   log_level: "info"
+  tool_prefix: "gw-"
 
 backends:
 
