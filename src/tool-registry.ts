@@ -15,9 +15,11 @@ export interface ToolEntry {
 export class ToolRegistry {
   private tools = new Map<string, ToolEntry>();
   private logger: Logger;
+  private globalPrefix: string;
 
-  constructor(logger: Logger) {
+  constructor(logger: Logger, globalPrefix = "") {
     this.logger = logger;
+    this.globalPrefix = globalPrefix;
   }
 
   /** Register all tools from a backend, namespacing them */
@@ -25,8 +27,9 @@ export class ToolRegistry {
     // Remove any existing tools for this backend first
     this.unregisterBackend(backendName);
 
+    const prefix = this.globalPrefix ? `${this.globalPrefix}${namespace}` : namespace;
     for (const tool of tools) {
-      const namespacedName = `${namespace}_${tool.name}`;
+      const namespacedName = `${prefix}_${tool.name}`;
       this.tools.set(namespacedName, {
         namespacedName,
         originalName: tool.name,
@@ -35,7 +38,7 @@ export class ToolRegistry {
       });
     }
     this.logger.info(
-      `Registered ${tools.length} tools from backend "${backendName}" (namespace: ${namespace})`
+      `Registered ${tools.length} tools from backend "${backendName}" (namespace: ${prefix})`
     );
   }
 
