@@ -1,6 +1,7 @@
-# MCP Gateway local ToolHive fleet mux configuration.
-# This config intentionally exposes only the compact gateway mux tools while
-# MCPU remains registered alongside it for existing live tool calls.
+# MCP Gateway — ToolHive fleet configuration.
+# All THV containers are auto-ingested from ~/.config/mcpu/config.generated.json
+# which is populated with current ports from `thv list`.
+# No hardcoded ports — they change on container restart.
 
 gateway:
   port: 3100
@@ -16,17 +17,28 @@ fleet:
     docker_ps: true
     endpoint_probe: false
     probe_timeout_ms: 750
-    # Auto-ingest running ToolHive MCP servers and static MCPU entries
-    # (for local stdio servers such as Copilot Studio) as callable gateway backends.
     auto_ingest: true
     ingest_static_mcpu_config: true
     ingest_namespace_prefix: ""
-    # Entries to skip: non-HTTP, mcpu itself, inspector
+    # Skip non-MCP and non-functional entries
     ingest_skip:
       - mcpu
-      - ghost-os
       - karen
       - inspector
       - hermes
+      - ghost-os
+      - open-swarm
+      - atlassian
+      - ms365
+      - az-teams-mcp
 
-backends: {}
+backends:
+  # Copilot Studio runs as a local stdio server, not in THV
+  copilot-studio:
+    transport: stdio
+    command: "node"
+    args: ["/Users/timothy.schwarz/Scripts/mcp-servers/copilot-studio-mcp/dist/index.js"]
+    namespace: "copilot-studio"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
