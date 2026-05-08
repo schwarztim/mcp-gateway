@@ -15,7 +15,7 @@ fleet:
     docker_ps: true
     endpoint_probe: false
     probe_timeout_ms: 750
-    auto_ingest: false
+    auto_ingest: true
 
 backends:
   echo:
