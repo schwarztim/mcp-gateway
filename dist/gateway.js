@@ -516,24 +516,31 @@ export class Gateway {
         });
     }
     searchRegisteredTools(args) {
-        const query = typeof args.query === "string" ? args.query.toLowerCase() : "";
+        const query = typeof args.query === "string" ? args.query : "";
         const backendFilter = typeof args.backend === "string" ? args.backend : "";
         const limit = typeof args.limit === "number" && Number.isFinite(args.limit)
             ? Math.max(1, Math.min(Math.floor(args.limit), 100))
             : 25;
         const matches = this.toolRegistry.getAllEntries()
             .filter((entry) => {
-            if (backendFilter && entry.backendName !== backendFilter)
+            const backendConfig = this.backends.get(entry.backendName)?.config;
+            if (backendFilter &&
+                !this.matchesSearch([
+                    entry.backendName,
+                    backendConfig?.namespace ?? "",
+                    backendConfig && "description" in backendConfig ? backendConfig.description ?? "" : "",
+                ].join(" "), backendFilter)) {
                 return false;
-            if (!query)
-                return true;
+            }
             const haystack = [
                 entry.namespacedName,
                 entry.originalName,
                 entry.backendName,
+                backendConfig?.namespace ?? "",
+                backendConfig && "description" in backendConfig ? backendConfig.description ?? "" : "",
                 entry.tool.description ?? "",
-            ].join(" ").toLowerCase();
-            return haystack.includes(query);
+            ].join(" ");
+            return this.matchesSearch(haystack, query);
         })
             .slice(0, limit)
             .map((entry) => ({
@@ -541,6 +548,12 @@ export class Gateway {
             backend: entry.backendName,
             originalName: entry.originalName,
             description: entry.tool.description,
+            backendDescription: (() => {
+                const backendConfig = this.backends.get(entry.backendName)?.config;
+                return backendConfig && "description" in backendConfig
+                    ? backendConfig.description
+                    : undefined;
+            })(),
         }));
         return {
             totalRegisteredTools: this.toolRegistry.getAllTools().length,
@@ -552,14 +565,23 @@ export class Gateway {
         const backendFilter = typeof args.backend === "string" ? args.backend : "";
         const toolStats = this.toolRegistry.getStats();
         const backends = Array.from(this.backends.entries())
-            .filter(([name]) => !backendFilter || name === backendFilter)
+            .filter(([name, backend]) => !backendFilter ||
+            this.matchesSearch([
+                name,
+                backend.config.namespace,
+                backend.config.transport,
+                "description" in backend.config ? backend.config.description ?? "" : "",
+            ].join(" "), backendFilter))
             .map(([name, backend]) => ({
             name,
+            namespace: backend.config.namespace,
+            transport: backend.config.transport,
             status: backend.status,
             toolCount: toolStats[name] ?? 0,
             error: backend.error,
             restartCount: backend.restartCount,
             lastConnected: backend.lastConnected?.toISOString(),
+            description: "description" in backend.config ? backend.config.description : undefined,
         }));
         return { totalBackends: this.backends.size, backends };
     }
@@ -627,23 +649,52 @@ export class Gateway {
         });
         this.backends.set(name, backend);
         try {
-            await backend.connect();
+            await this.withTimeout(backend.connect(), config.connect_timeout_ms, `Backend "${name}" connection timed out after ${config.connect_timeout_ms}ms`);
             if (backend.status === "connected") {
                 this.toolRegistry.registerBackend(name, config.namespace, backend.tools);
             }
         }
-        catch {
+        catch (err) {
+            await backend.disconnect();
+            this.logger.warn(`Backend "${name}" startup did not complete: ${err instanceof Error ? err.message : String(err)}`);
             this.logger.warn(`Backend "${name}" failed to start — will retry per restart policy`);
         }
     }
+    async withTimeout(promise, timeoutMs, message) {
+        let timer;
+        const timeout = new Promise((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        });
+        try {
+            return await Promise.race([promise, timeout]);
+        }
+        finally {
+            if (timer)
+                clearTimeout(timer);
+        }
+    }
     isFleetIngestedConfig(config) {
-        return "source" in config && config.source === "fleet-mcpu";
+        return "source" in config && typeof config.source === "string" && config.source.startsWith("fleet-mcpu");
     }
     getBackendUrl(config) {
         if (config.transport === "http" || config.transport === "sse") {
             return config.url;
         }
         return undefined;
+    }
+    normalizeSearchText(value) {
+        return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+    }
+    matchesSearch(haystack, query) {
+        if (!query)
+            return true;
+        const normalizedQuery = this.normalizeSearchText(query);
+        if (!normalizedQuery)
+            return true;
+        const normalizedHaystack = this.normalizeSearchText(haystack);
+        return normalizedQuery
+            .split(" ")
+            .every((term) => normalizedHaystack.includes(term));
     }
     backendConfigChanged(current, next) {
         return JSON.stringify(current) !== JSON.stringify(next);

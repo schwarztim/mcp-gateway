@@ -29,8 +29,11 @@ export declare class Gateway {
     private callBackendTool;
     private notifyToolsChanged;
     private connectBackend;
+    private withTimeout;
     private isFleetIngestedConfig;
     private getBackendUrl;
+    private normalizeSearchText;
+    private matchesSearch;
     private backendConfigChanged;
     private requireAdminAccess;
     private isLoopbackAddress;
