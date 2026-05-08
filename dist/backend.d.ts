@@ -33,6 +33,7 @@ export declare class BackendInstance {
     connect(): Promise<void>;
     private connectStdio;
     private connectSse;
+    private connectHttp;
     private handleDisconnect;
     /** Call a tool on this backend */
     callTool(toolName: string, args: Record<string, unknown>): Promise<unknown>;

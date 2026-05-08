@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import Vault from "node-vault";
 
@@ -24,13 +24,39 @@ const SseBackendSchema = z.object({
   namespace: z.string(),
   enabled: z.boolean().default(true),
   reconnect_interval: z.number().default(5),
+  max_restarts: z.number().default(5),
+  restart_policy: z
+    .enum(["always", "on-failure", "never"])
+    .default("on-failure"),
   headers: z.record(z.string()).default({}),
   health_check_interval: z.number().default(30),
+  source: z.string().optional(),
+  description: z.string().optional(),
+});
+
+/** Streamable HTTP transport used by ToolHive-managed MCP servers */
+const HttpBackendSchema = z.object({
+  transport: z.literal("http"),
+  url: z.string().url(),
+  namespace: z.string(),
+  enabled: z.boolean().default(true),
+  reconnect_interval: z.number().default(5),
+  max_restarts: z.number().default(5),
+  restart_policy: z
+    .enum(["always", "on-failure", "never"])
+    .default("on-failure"),
+  headers: z.record(z.string()).default({}),
+  health_check_interval: z.number().default(30),
+  /** Informational: source of this backend entry (e.g. "fleet-mcpu") */
+  source: z.string().optional(),
+  /** Informational: original description from the fleet catalog */
+  description: z.string().optional(),
 });
 
 const BackendSchema = z.discriminatedUnion("transport", [
   StdioBackendSchema,
   SseBackendSchema,
+  HttpBackendSchema,
 ]);
 
 const GatewayConfigSchema = z.object({
@@ -39,17 +65,43 @@ const GatewayConfigSchema = z.object({
   name: z.string().default("mcp-gateway"),
   log_level: z.enum(["debug", "info", "warn", "error"]).default("info"),
   tool_prefix: z.string().default(""),
+  tool_exposure: z.enum(["namespaced", "mux", "both"]).default("namespaced"),
+});
+
+const ToolHiveFleetConfigSchema = z.object({
+  app_support_dir: z.string().optional(),
+  mcpu_generated_config: z.string().optional(),
+  docker_ps: z.boolean().default(true),
+  endpoint_probe: z.boolean().default(false),
+  probe_timeout_ms: z.number().int().positive().default(750),
+  /** Auto-ingest fleet entries as gateway backends at startup */
+  auto_ingest: z.boolean().default(true),
+  /** Prefix for auto-ingested backend namespaces (default: "") */
+  ingest_namespace_prefix: z.string().default(""),
+  /** Only ingest entries matching these names (empty = all) */
+  ingest_only: z.array(z.string()).default([]),
+  /** Skip ingesting entries matching these names */
+  ingest_skip: z.array(z.string()).default([]),
+});
+
+const FleetConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  toolhive: ToolHiveFleetConfigSchema.default({}),
 });
 
 const ConfigFileSchema = z.object({
   gateway: GatewayConfigSchema.default({}),
+  fleet: FleetConfigSchema.default({}),
   backends: z.record(BackendSchema).default({}),
 });
 
 export type StdioBackendConfig = z.infer<typeof StdioBackendSchema>;
 export type SseBackendConfig = z.infer<typeof SseBackendSchema>;
+export type HttpBackendConfig = z.infer<typeof HttpBackendSchema>;
 export type BackendConfig = z.infer<typeof BackendSchema>;
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema>;
+export type ToolHiveFleetConfig = z.infer<typeof ToolHiveFleetConfigSchema>;
+export type FleetConfig = z.infer<typeof FleetConfigSchema>;
 export type Config = z.infer<typeof ConfigFileSchema>;
 
 /** Resolve ${VAR} references in a string from process.env */
@@ -135,7 +187,7 @@ async function resolveVaultInObject(obj: unknown): Promise<unknown> {
 }
 
 export async function loadConfig(filePath: string): Promise<Config> {
-  const raw = readFileSync(filePath, "utf-8");
+  const raw = await readFile(filePath, "utf-8");
   const parsed = parseYaml(raw);
 
   // First resolve env vars, then resolve vault references

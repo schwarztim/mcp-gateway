@@ -1,15 +1,18 @@
 export class ToolRegistry {
     tools = new Map();
     logger;
-    constructor(logger) {
+    globalPrefix;
+    constructor(logger, globalPrefix = "") {
         this.logger = logger;
+        this.globalPrefix = globalPrefix;
     }
     /** Register all tools from a backend, namespacing them */
     registerBackend(backendName, namespace, tools) {
         // Remove any existing tools for this backend first
         this.unregisterBackend(backendName);
+        const prefix = this.globalPrefix ? `${this.globalPrefix}${namespace}` : namespace;
         for (const tool of tools) {
-            const namespacedName = `${namespace}_${tool.name}`;
+            const namespacedName = `${prefix}_${tool.name}`;
             this.tools.set(namespacedName, {
                 namespacedName,
                 originalName: tool.name,
@@ -17,7 +20,7 @@ export class ToolRegistry {
                 tool: { ...tool, name: namespacedName },
             });
         }
-        this.logger.info(`Registered ${tools.length} tools from backend "${backendName}" (namespace: ${namespace})`);
+        this.logger.info(`Registered ${tools.length} tools from backend "${backendName}" (namespace: ${prefix})`);
     }
     /** Remove all tools for a backend */
     unregisterBackend(backendName) {
@@ -35,6 +38,10 @@ export class ToolRegistry {
     /** Get all registered tools (for tools/list) */
     getAllTools() {
         return Array.from(this.tools.values()).map((e) => e.tool);
+    }
+    /** Get all registered tool entries, including backend routing metadata */
+    getAllEntries() {
+        return Array.from(this.tools.values());
     }
     /** Look up a tool by its namespaced name */
     resolve(namespacedName) {
