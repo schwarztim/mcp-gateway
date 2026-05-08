@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts"
+    "start:fleet": "MCP_GATEWAY_CONFIG=config.fleet.yaml node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "harness": "node dist/resilience-harness.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

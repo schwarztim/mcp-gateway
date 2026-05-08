@@ -1,135 +1,121 @@
 # MCP Gateway
 
-A proxy/gateway that aggregates multiple MCP (Model Context Protocol) servers behind a single SSE/HTTP endpoint. Supports dynamic reload of individual backends without disconnecting clients.
+MCP Gateway is a local-first gateway for large Model Context Protocol fleets. It lets Claude Code, Copilot CLI, and other MCP clients connect to one stable Streamable HTTP endpoint while the gateway manages many backend MCP servers behind a compact mux surface.
 
-## Features
+The main goal is context control: clients can list only a few gateway tools, search backend tools on demand, and call the selected backend tool without loading hundreds of backend tool schemas into every session.
 
-- **Unified endpoint** — Expose all your MCP backends through one SSE URL
-- **Tool namespacing** — Tools prefixed with backend namespace to avoid conflicts (e.g. `sn_incidents_list`, `gh_search_code`)
-- **Dynamic reload** — Restart/reload individual backends via admin API without dropping client connections
-- **Hot config reload** — Edit `config.yaml` and changes apply automatically
-- **Health monitoring** — Periodic health checks with auto-reconnect on failure
-- **Stdio + SSE backends** — Connect to both local stdio-based and remote SSE-based MCP servers
-- **Admin REST API** — Status, reload, enable/disable backends at runtime
+## What it provides
 
-## Quick Start
+- **One client endpoint**: `http://127.0.0.1:3100/mcp` for Streamable HTTP clients, plus legacy `/sse` support.
+- **Compact mux mode**: expose only gateway tools instead of every backend tool schema.
+- **Dynamic backend ingestion**: read the MCPU-generated ToolHive config and connect reachable HTTP MCP backends automatically.
+- **Read-only fleet inventory**: inspect ToolHive runconfigs, status files, generated MCPU exposure, optional Docker state, and endpoint health.
+- **Stable reload behavior**: reload config or fleet entries without dropping the whole gateway.
+- **Backend reconnects**: health monitor reconnects failed backends and re-registers tools.
+- **Resilience harness**: simulates 500 fleet entries to keep context surface and degradation behavior honest.
+
+## Gateway mux tools
+
+When `gateway.tool_exposure` is set to `mux`, clients see only:
+
+| Tool | Purpose |
+|---|---|
+| `gateway_search_tools` | Search connected backend tools without exposing every backend schema in `tools/list`. |
+| `gateway_call_tool` | Call a namespaced backend tool returned by search. |
+| `gateway_backend_status` | Show backend connection state and tool counts. |
+| `gateway_fleet_inventory` | Inspect the read-only ToolHive fleet catalog. |
+| `gateway_mcpu_config` | Generate a read-only MCPU-compatible fleet config report. |
+
+## Quick start
 
 ```bash
 npm install
-npx tsx src/index.ts
-# or after building:
-npm run build && node dist/index.js
+npm run build
+npm run start:fleet
 ```
 
-The gateway starts on `http://localhost:3100` by default.
+The included `config.fleet.yaml` starts a local mux gateway on `127.0.0.1:3100` and auto-ingests HTTP MCP backends from `~/.config/mcpu/config.generated.json`.
 
 ## Configuration
-
-Edit `config.yaml`:
 
 ```yaml
 gateway:
   port: 3100
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   name: "mcp-gateway"
+  tool_exposure: "mux"
 
-backends:
-  servicenow:
-    transport: stdio
-    command: "node"
-    args: ["path/to/servicenow-mcp/dist/index.js"]
-    env:
-      SERVICENOW_INSTANCE_URL: "${SERVICENOW_INSTANCE_URL}"
-    namespace: "sn"
-    enabled: true
-    restart_policy: "on-failure"
+fleet:
+  enabled: true
+  toolhive:
+    mcpu_generated_config: "~/.config/mcpu/config.generated.json"
+    docker_ps: true
+    endpoint_probe: false
+    auto_ingest: true
+    ingest_namespace_prefix: ""
+    ingest_skip:
+      - mcpu
+      - inspector
 
-  github:
-    transport: stdio
-    command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-github"]
-    env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
-    namespace: "gh"
-    enabled: true
-
-  akamai:
-    transport: sse
-    url: "http://akamai-mcp:3001/sse"
-    namespace: "akamai"
-    enabled: true
-    reconnect_interval: 5
+backends: {}
 ```
 
-### Environment Variables
+`gateway.tool_exposure` modes:
 
-Use `${VAR}` syntax in config values. They're resolved from `process.env` at load time.
+| Mode | Behavior |
+|---|---|
+| `mux` | Expose only the compact gateway tools. Recommended for large fleets. |
+| `namespaced` | Expose all backend tools directly with namespace prefixes. |
+| `both` | Expose gateway tools and all backend tools. |
 
-## Connecting Clients
+Static backends can still be configured under `backends` using `stdio`, `sse`, or `http` transports.
 
-Point your MCP client (Claude Desktop, Copilot CLI, etc.) to the gateway's SSE endpoint:
+## Client setup
 
+Point Claude Code, Copilot CLI, or any Streamable HTTP MCP client at:
+
+```text
+http://127.0.0.1:3100/mcp
 ```
-http://localhost:3100/sse
-```
 
-All backend tools appear namespaced: `{namespace}_{tool_name}`
+Keep existing MCPU/ToolHive registrations in place until the gateway has proven stable in your environment. The gateway is designed to run alongside them first, then replace direct fleet access when you are ready.
 
 ## Admin API
 
+Admin routes are restricted to loopback clients by default. If the gateway is exposed beyond loopback, set `MCP_GATEWAY_ADMIN_TOKEN` and pass `Authorization: Bearer <token>`.
+
 | Endpoint | Method | Description |
 |---|---|---|
-| `/admin/status` | GET | Gateway status + tool counts |
-| `/admin/backends` | GET | List all backends with status |
-| `/admin/reload/:name` | POST | Restart a specific backend |
-| `/admin/enable/:name` | POST | Enable a disabled backend |
-| `/admin/disable/:name` | POST | Disable a backend |
-| `/admin/reload-config` | POST | Reload config.yaml |
+| `/admin/status` | GET | Gateway status and tool counts. |
+| `/admin/backends` | GET | List all backends with status. |
+| `/admin/reload/:name` | POST | Restart a specific backend. |
+| `/admin/enable/:name` | POST | Enable a disabled backend. |
+| `/admin/disable/:name` | POST | Disable a backend. |
+| `/admin/reload-config` | POST | Reload the gateway config file. |
+| `/admin/fleet/summary` | GET | ToolHive fleet counts, health summary, and source paths. |
+| `/admin/fleet/inventory` | GET | Full read-only ToolHive fleet catalog; add `?probe=true` for TCP endpoint checks. |
+| `/admin/fleet/mcpu-config` | GET | Read-only MCPU-compatible config report; add `?configOnly=true` for only the config object. |
+| `/admin/fleet/backends` | GET | List auto-ingested fleet backends. |
+| `/admin/fleet/reload` | POST | Re-read generated MCPU config and refresh fleet backends. |
 
-### Examples
-
-```bash
-# Check status
-curl http://localhost:3100/admin/status
-
-# Reload the ServiceNow backend
-curl -X POST http://localhost:3100/admin/reload/servicenow
-
-# Disable a backend temporarily
-curl -X POST http://localhost:3100/admin/disable/akamai
-
-# Reload entire config (picks up new backends)
-curl -X POST http://localhost:3100/admin/reload-config
-```
-
-## Docker
+## Validation
 
 ```bash
-docker compose up -d
+npm run build -- --pretty false
+npm run harness
 ```
 
-Mount your `config.yaml` and pass environment variables through `docker-compose.yml`.
+The harness verifies:
 
-## Architecture
+- 500 simulated fleet entries remain represented.
+- Degraded entries stay discoverable with reasons.
+- The client-facing mux surface remains 5 tools.
+- Changed backend ports are resolved from the latest fleet state.
 
-```
-Client (Claude/Copilot)
-    │ SSE
-    ▼
-┌─────────────────────────┐
-│     MCP Gateway         │
-│  ┌───────────────────┐  │
-│  │  Tool Registry    │  │ ← namespaced tool aggregation
-│  └───────────────────┘  │
-│  ┌──────┐ ┌──────┐      │
-│  │stdio │ │ sse  │ ...  │ ← backend connections
-│  └──────┘ └──────┘      │
-└─────────────────────────┘
-    │           │
-    ▼           ▼
-  Local MCP   Remote MCP
-  (process)   (HTTP/SSE)
-```
+## Repository READMEs
+
+- `README.github.md` contains the public/open-source publication notes.
+- `README.stash.md` contains internal Stash deployment notes and live fleet wiring guidance.
 
 ## License
 

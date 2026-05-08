@@ -61,6 +61,11 @@ export class ToolRegistry {
     return Array.from(this.tools.values()).map((e) => e.tool);
   }
 
+  /** Get all registered tool entries, including backend routing metadata */
+  getAllEntries(): ToolEntry[] {
+    return Array.from(this.tools.values());
+  }
+
   /** Look up a tool by its namespaced name */
   resolve(namespacedName: string): ToolEntry | undefined {
     return this.tools.get(namespacedName);

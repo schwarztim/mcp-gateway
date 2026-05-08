@@ -1,0 +1,30 @@
+# MCP Gateway local ToolHive fleet mux configuration.
+# This config intentionally exposes only the compact gateway mux tools while
+# MCPU remains registered alongside it for existing live tool calls.
+
+gateway:
+  port: 3100
+  host: "127.0.0.1"
+  name: "mcp-gateway"
+  log_level: "info"
+  tool_prefix: ""
+  tool_exposure: "mux"
+
+fleet:
+  enabled: true
+  toolhive:
+    docker_ps: true
+    endpoint_probe: false
+    probe_timeout_ms: 750
+    # Auto-ingest running ToolHive MCP servers as callable gateway backends
+    auto_ingest: true
+    ingest_namespace_prefix: ""
+    # Entries to skip: non-HTTP, mcpu itself, inspector
+    ingest_skip:
+      - mcpu
+      - ghost-os
+      - karen
+      - inspector
+      - hermes
+
+backends: {}

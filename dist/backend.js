@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 export class BackendInstance {
     name;
     config;
@@ -56,6 +57,9 @@ export class BackendInstance {
             this.client = new Client({ name: `mcp-gateway/${this.name}`, version: "1.0.0" }, { capabilities: {} });
             if (this.config.transport === "stdio") {
                 await this.connectStdio(this.config);
+            }
+            else if (this.config.transport === "http") {
+                await this.connectHttp(this.config);
             }
             else {
                 await this.connectSse(this.config);
@@ -117,18 +121,49 @@ export class BackendInstance {
         };
         await this.client.connect(this.transport);
     }
+    async connectHttp(config) {
+        const url = new URL(config.url);
+        const headers = { ...config.headers };
+        this.transport = new StreamableHTTPClientTransport(url, {
+            requestInit: {
+                headers,
+            },
+        });
+        this.transport.onclose = () => {
+            if (this._status === "connected") {
+                this.logger.warn(`Backend "${this.name}" HTTP connection closed`);
+                this._status = "disconnected";
+                this.handleDisconnect();
+            }
+        };
+        this.transport.onerror = (err) => {
+            this.logger.error(`Backend "${this.name}" HTTP error: ${err.message}`);
+            this._error = err.message;
+        };
+        await this.client.connect(this.transport);
+    }
     handleDisconnect() {
         const policy = this.config.transport === "stdio"
             ? this.config.restart_policy
-            : "on-failure";
-        const maxRestarts = this.config.transport === "stdio" ? this.config.max_restarts : 5;
+            : this.config.transport === "http"
+                ? this.config.restart_policy
+                : this.config.restart_policy;
+        const maxRestarts = this.config.transport === "stdio"
+            ? this.config.max_restarts
+            : this.config.transport === "http"
+                ? this.config.max_restarts
+                : this.config.max_restarts;
         if (policy === "never" ||
             (policy === "on-failure" && this._restartCount >= maxRestarts)) {
             this.logger.warn(`Backend "${this.name}" will not be restarted (policy: ${policy}, restarts: ${this._restartCount}/${maxRestarts})`);
             return;
         }
         this._restartCount++;
-        const delay = this.config.transport === "sse" ? this.config.reconnect_interval : 2;
+        const delay = this.config.transport === "sse"
+            ? this.config.reconnect_interval
+            : this.config.transport === "http"
+                ? this.config.reconnect_interval
+                : 2;
         this.logger.info(`Backend "${this.name}" reconnecting in ${delay}s (attempt ${this._restartCount})`);
         setTimeout(async () => {
             try {

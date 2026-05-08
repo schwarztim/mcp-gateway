@@ -1,11 +1,13 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type {
   BackendConfig,
   StdioBackendConfig,
   SseBackendConfig,
+  HttpBackendConfig,
 } from "./config.js";
 import type { Logger } from "./logger.js";
 
@@ -30,7 +32,7 @@ export class BackendInstance {
   readonly name: string;
   readonly config: BackendConfig;
   private client: Client | null = null;
-  private transport: StdioClientTransport | SSEClientTransport | null = null;
+  private transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport | null = null;
   private _status: BackendStatus = "disconnected";
   private _tools: Tool[] = [];
   private _error?: string;
@@ -96,6 +98,8 @@ export class BackendInstance {
 
       if (this.config.transport === "stdio") {
         await this.connectStdio(this.config);
+      } else if (this.config.transport === "http") {
+        await this.connectHttp(this.config);
       } else {
         await this.connectSse(this.config);
       }
@@ -169,13 +173,44 @@ export class BackendInstance {
     await this.client!.connect(this.transport);
   }
 
+  private async connectHttp(config: HttpBackendConfig): Promise<void> {
+    const url = new URL(config.url);
+    const headers: Record<string, string> = { ...config.headers };
+    this.transport = new StreamableHTTPClientTransport(url, {
+      requestInit: {
+        headers,
+      },
+    });
+
+    this.transport.onclose = () => {
+      if (this._status === "connected") {
+        this.logger.warn(`Backend "${this.name}" HTTP connection closed`);
+        this._status = "disconnected";
+        this.handleDisconnect();
+      }
+    };
+
+    this.transport.onerror = (err) => {
+      this.logger.error(`Backend "${this.name}" HTTP error: ${err.message}`);
+      this._error = err.message;
+    };
+
+    await this.client!.connect(this.transport);
+  }
+
   private handleDisconnect(): void {
     const policy =
       this.config.transport === "stdio"
         ? this.config.restart_policy
-        : "on-failure";
+        : this.config.transport === "http"
+          ? this.config.restart_policy
+          : this.config.restart_policy;
     const maxRestarts =
-      this.config.transport === "stdio" ? this.config.max_restarts : 5;
+      this.config.transport === "stdio"
+        ? this.config.max_restarts
+        : this.config.transport === "http"
+          ? this.config.max_restarts
+          : this.config.max_restarts;
 
     if (
       policy === "never" ||
@@ -189,7 +224,11 @@ export class BackendInstance {
 
     this._restartCount++;
     const delay =
-      this.config.transport === "sse" ? this.config.reconnect_interval : 2;
+      this.config.transport === "sse"
+        ? this.config.reconnect_interval
+        : this.config.transport === "http"
+          ? this.config.reconnect_interval
+          : 2;
     this.logger.info(
       `Backend "${this.name}" reconnecting in ${delay}s (attempt ${this._restartCount})`
     );
