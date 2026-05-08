@@ -1,6 +1,6 @@
-import type { HttpBackendConfig, SseBackendConfig, ToolHiveFleetConfig } from "./config.js";
+import type { HttpBackendConfig, SseBackendConfig, StdioBackendConfig, ToolHiveFleetConfig } from "./config.js";
 import type { Logger } from "./logger.js";
-export type FleetBackendConfig = HttpBackendConfig | SseBackendConfig;
+export type FleetBackendConfig = HttpBackendConfig | SseBackendConfig | StdioBackendConfig;
 export interface FleetIngestResult {
     backends: Record<string, FleetBackendConfig>;
     skipped: Array<{
@@ -8,6 +8,7 @@ export interface FleetIngestResult {
         reason: string;
     }>;
     source: string;
+    sources: string[];
     generatedAt: string;
 }
 /**

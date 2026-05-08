@@ -23,6 +23,7 @@ export declare class BackendInstance {
     private _lastConnected?;
     private logger;
     private onToolsChanged?;
+    private connectionGeneration;
     constructor(name: string, config: BackendConfig, logger: Logger, onToolsChanged?: () => void);
     get status(): BackendStatus;
     get tools(): Tool[];

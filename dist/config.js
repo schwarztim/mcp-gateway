@@ -14,7 +14,12 @@ const StdioBackendSchema = z.object({
         .enum(["always", "on-failure", "never"])
         .default("on-failure"),
     max_restarts: z.number().default(5),
+    connect_timeout_ms: z.number().int().positive().default(15_000),
     health_check_interval: z.number().default(30),
+    /** Informational: source of this backend entry (e.g. "fleet-mcpu-static") */
+    source: z.string().optional(),
+    /** Informational: original description from the source config */
+    description: z.string().optional(),
 });
 const SseBackendSchema = z.object({
     transport: z.literal("sse"),
@@ -23,6 +28,7 @@ const SseBackendSchema = z.object({
     enabled: z.boolean().default(true),
     reconnect_interval: z.number().default(5),
     max_restarts: z.number().default(5),
+    connect_timeout_ms: z.number().int().positive().default(15_000),
     restart_policy: z
         .enum(["always", "on-failure", "never"])
         .default("on-failure"),
@@ -39,6 +45,7 @@ const HttpBackendSchema = z.object({
     enabled: z.boolean().default(true),
     reconnect_interval: z.number().default(5),
     max_restarts: z.number().default(5),
+    connect_timeout_ms: z.number().int().positive().default(15_000),
     restart_policy: z
         .enum(["always", "on-failure", "never"])
         .default("on-failure"),
@@ -65,6 +72,12 @@ const GatewayConfigSchema = z.object({
 const ToolHiveFleetConfigSchema = z.object({
     app_support_dir: z.string().optional(),
     mcpu_generated_config: z.string().optional(),
+    /** Also ingest static MCPU config entries that are not in generated ToolHive config */
+    ingest_static_mcpu_config: z.boolean().default(true),
+    /** Static MCPU config path; defaults to ~/.config/mcpu/config.json */
+    mcpu_static_config: z.string().optional(),
+    /** Additional flat or mcpServers-style MCPU config files to merge after generated/static configs */
+    additional_mcpu_configs: z.array(z.string()).default([]),
     docker_ps: z.boolean().default(true),
     endpoint_probe: z.boolean().default(false),
     probe_timeout_ms: z.number().int().positive().default(750),

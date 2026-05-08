@@ -10,15 +10,21 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { HttpBackendConfig, SseBackendConfig, ToolHiveFleetConfig } from "./config.js";
+import type {
+  HttpBackendConfig,
+  SseBackendConfig,
+  StdioBackendConfig,
+  ToolHiveFleetConfig,
+} from "./config.js";
 import type { Logger } from "./logger.js";
 
-export type FleetBackendConfig = HttpBackendConfig | SseBackendConfig;
+export type FleetBackendConfig = HttpBackendConfig | SseBackendConfig | StdioBackendConfig;
 
 export interface FleetIngestResult {
   backends: Record<string, FleetBackendConfig>;
   skipped: Array<{ name: string; reason: string }>;
   source: string;
+  sources: string[];
   generatedAt: string;
 }
 
@@ -28,8 +34,14 @@ interface McpuEntry {
   url?: string;
   command?: string;
   args?: string[];
+  cwd?: string;
   env?: Record<string, string>;
   description?: string;
+}
+
+interface McpuConfigSource {
+  path: string;
+  source: "fleet-mcpu-generated" | "fleet-mcpu-static" | "fleet-mcpu-additional";
 }
 
 /**
@@ -66,6 +78,47 @@ function makeUniqueNamespace(
   return namespace;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeConfigMap(parsed: unknown): Record<string, McpuEntry> {
+  if (!isRecord(parsed)) return {};
+
+  const maybeWrapped = parsed.mcpServers;
+  if (isRecord(maybeWrapped)) {
+    return Object.fromEntries(
+      Object.entries(maybeWrapped).filter(([, value]) => isRecord(value))
+    ) as Record<string, McpuEntry>;
+  }
+
+  return Object.fromEntries(
+    Object.entries(parsed).filter(([, value]) => isRecord(value))
+  ) as Record<string, McpuEntry>;
+}
+
+async function readConfigSource(
+  source: McpuConfigSource,
+  logger: Logger
+): Promise<Record<string, McpuEntry> | undefined> {
+  try {
+    const content = await readFile(source.path, "utf-8");
+    return normalizeConfigMap(JSON.parse(content) as unknown);
+  } catch (err) {
+    logger.warn(
+      `Fleet ingestion: could not read MCPU config at ${source.path}: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return undefined;
+  }
+}
+
+function inferTransport(entry: McpuEntry): string {
+  if (entry.type) return entry.type;
+  if (entry.command) return "stdio";
+  if (entry.url) return "http";
+  return "";
+}
+
 /**
  * Load the MCPU-generated config from disk and convert eligible entries to
  * gateway backend configs.
@@ -74,114 +127,154 @@ export async function loadFleetBackendsFromMcpuConfig(
   fleetConfig: ToolHiveFleetConfig,
   logger: Logger
 ): Promise<FleetIngestResult> {
-  const configPath =
+  const generatedPath =
     fleetConfig.mcpu_generated_config ??
     join(homedir(), ".config", "mcpu", "config.generated.json");
+  const staticPath =
+    fleetConfig.mcpu_static_config ??
+    join(homedir(), ".config", "mcpu", "config.json");
+  const configSources: McpuConfigSource[] = [
+    { path: generatedPath, source: "fleet-mcpu-generated" },
+    ...(fleetConfig.ingest_static_mcpu_config
+      ? [{ path: staticPath, source: "fleet-mcpu-static" } as const]
+      : []),
+    ...fleetConfig.additional_mcpu_configs.map((path) => ({
+      path,
+      source: "fleet-mcpu-additional" as const,
+    })),
+  ];
 
   const result: FleetIngestResult = {
     backends: {},
     skipped: [],
-    source: configPath,
+    source: configSources.map((s) => s.path).join(", "),
+    sources: configSources.map((s) => s.path),
     generatedAt: new Date().toISOString(),
   };
-
-  // Read the MCPU generated config.
-  let rawConfig: Record<string, McpuEntry>;
-  try {
-    const content = await readFile(configPath, "utf-8");
-    rawConfig = JSON.parse(content) as Record<string, McpuEntry>;
-  } catch (err) {
-    logger.warn(
-      `Fleet ingestion: could not read MCPU config at ${configPath}: ${err instanceof Error ? err.message : String(err)}`
-    );
-    return result;
-  }
 
   const ingestOnly = new Set(fleetConfig.ingest_only ?? []);
   const ingestSkip = new Set(fleetConfig.ingest_skip ?? []);
   const namespacePrefix = fleetConfig.ingest_namespace_prefix ?? "";
   const usedNamespaces = new Map<string, string>();
 
-  for (const [name, entry] of Object.entries(rawConfig)) {
-    // Filters.
-    if (ingestOnly.size > 0 && !ingestOnly.has(name)) {
-      result.skipped.push({ name, reason: "not in ingest_only list" });
-      continue;
-    }
-    if (ingestSkip.has(name)) {
-      result.skipped.push({ name, reason: "in ingest_skip list" });
-      continue;
-    }
+  for (const source of configSources) {
+    const rawConfig = await readConfigSource(source, logger);
+    if (!rawConfig) continue;
 
-    // Only ingest HTTP-based entries.
-    const type = entry.type ?? "";
-    if (type !== "streamable-http" && type !== "http" && type !== "sse") {
-      result.skipped.push({
+    for (const [name, entry] of Object.entries(rawConfig)) {
+      // Filters.
+      if (ingestOnly.size > 0 && !ingestOnly.has(name)) {
+        result.skipped.push({ name, reason: `not in ingest_only list (${source.path})` });
+        continue;
+      }
+      if (ingestSkip.has(name)) {
+        result.skipped.push({ name, reason: `in ingest_skip list (${source.path})` });
+        continue;
+      }
+      if (result.backends[name]) {
+        result.skipped.push({
+          name,
+          reason: `already loaded from higher-priority config; skipping duplicate in ${source.path}`,
+        });
+        continue;
+      }
+
+      const type = inferTransport(entry);
+      const namespace = makeUniqueNamespace(
+        `${namespacePrefix}${sanitiseName(name)}`,
         name,
-        reason: `type="${type}" is not http/streamable-http/sse; only HTTP transports are auto-ingested`,
-      });
-      continue;
-    }
+        usedNamespaces,
+        logger
+      );
 
-    if (!entry.url) {
-      result.skipped.push({ name, reason: "no URL provided" });
-      continue;
-    }
+      if (type === "stdio") {
+        if (!entry.command) {
+          result.skipped.push({ name, reason: `stdio entry has no command (${source.path})` });
+          continue;
+        }
+        const config: StdioBackendConfig = {
+          transport: "stdio",
+          command: entry.command,
+          args: entry.args ?? [],
+          cwd: entry.cwd,
+          env: entry.env ?? {},
+          namespace,
+          enabled: true,
+          max_restarts: 5,
+          connect_timeout_ms: 15_000,
+          restart_policy: "on-failure",
+          health_check_interval: 30,
+          source: source.source,
+          description: entry.description,
+        };
+        result.backends[name] = config;
+        logger.debug(`Fleet ingestion: will connect "${name}" as stdio backend from ${source.path}`);
+        continue;
+      }
 
-    // Validate URL.
-    let url: URL;
-    try {
-      url = new URL(entry.url);
-    } catch {
-      result.skipped.push({ name, reason: `invalid URL: ${entry.url}` });
-      continue;
-    }
+      if (type !== "streamable-http" && type !== "http" && type !== "sse") {
+        result.skipped.push({
+          name,
+          reason: `type="${type}" is not stdio/http/streamable-http/sse (${source.path})`,
+        });
+        continue;
+      }
 
-    const namespace = makeUniqueNamespace(
-      `${namespacePrefix}${sanitiseName(name)}`,
-      name,
-      usedNamespaces,
-      logger
-    );
+      if (!entry.url) {
+        result.skipped.push({ name, reason: `no URL provided (${source.path})` });
+        continue;
+      }
 
-    if (type === "sse") {
-      const config: SseBackendConfig = {
-        transport: "sse",
-        url: url.toString(),
-        namespace,
-        enabled: true,
-        reconnect_interval: 5,
-        max_restarts: 5,
-        restart_policy: "on-failure",
-        headers: {},
-        health_check_interval: 30,
-        source: "fleet-mcpu",
-        description: entry.description,
-      };
-      result.backends[name] = config;
-      logger.debug(`Fleet ingestion: will connect "${name}" as SSE backend at ${url}`);
-    } else {
-      // streamable-http or http
-      const config: HttpBackendConfig = {
-        transport: "http",
-        url: url.toString(),
-        namespace,
-        enabled: true,
-        reconnect_interval: 5,
-        max_restarts: 5,
-        restart_policy: "on-failure",
-        headers: {},
-        health_check_interval: 30,
-        source: "fleet-mcpu",
-        description: entry.description,
-      };
-      result.backends[name] = config;
-      logger.debug(`Fleet ingestion: will connect "${name}" as HTTP backend at ${url}`);
+      // Validate URL.
+      let url: URL;
+      try {
+        url = new URL(entry.url);
+      } catch {
+        result.skipped.push({ name, reason: `invalid URL: ${entry.url} (${source.path})` });
+        continue;
+      }
+
+      if (type === "sse") {
+        const config: SseBackendConfig = {
+          transport: "sse",
+          url: url.toString(),
+          namespace,
+          enabled: true,
+          reconnect_interval: 5,
+          max_restarts: 5,
+          connect_timeout_ms: 15_000,
+          restart_policy: "on-failure",
+          headers: {},
+          health_check_interval: 30,
+          source: source.source,
+          description: entry.description,
+        };
+        result.backends[name] = config;
+        logger.debug(`Fleet ingestion: will connect "${name}" as SSE backend at ${url}`);
+      } else {
+        // streamable-http or http
+        const config: HttpBackendConfig = {
+          transport: "http",
+          url: url.toString(),
+          namespace,
+          enabled: true,
+          reconnect_interval: 5,
+          max_restarts: 5,
+          connect_timeout_ms: 15_000,
+          restart_policy: "on-failure",
+          headers: {},
+          health_check_interval: 30,
+          source: source.source,
+          description: entry.description,
+        };
+        result.backends[name] = config;
+        logger.debug(`Fleet ingestion: will connect "${name}" as HTTP backend at ${url}`);
+      }
     }
   }
 
   logger.info(
-    `Fleet ingestion: ${Object.keys(result.backends).length} backends loaded from ${configPath} (${result.skipped.length} skipped)`
+    `Fleet ingestion: ${Object.keys(result.backends).length} backends loaded from ${configSources.length} MCPU config source(s) (${result.skipped.length} skipped)`
   );
   return result;
 }

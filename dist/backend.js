@@ -14,6 +14,7 @@ export class BackendInstance {
     _lastConnected;
     logger;
     onToolsChanged;
+    connectionGeneration = 0;
     constructor(name, config, logger, onToolsChanged) {
         this.name = name;
         this.config = config;
@@ -51,6 +52,7 @@ export class BackendInstance {
             this._status = "disabled";
             return;
         }
+        const generation = ++this.connectionGeneration;
         this._status = "starting";
         this._error = undefined;
         try {
@@ -64,17 +66,25 @@ export class BackendInstance {
             else {
                 await this.connectSse(this.config);
             }
+            if (generation !== this.connectionGeneration || !this.client || this._status !== "starting") {
+                throw new Error(`Connection was cancelled for backend "${this.name}"`);
+            }
             // Fetch tools
             const toolsResult = await this.client.listTools();
+            if (generation !== this.connectionGeneration || !this.client || this._status !== "starting") {
+                throw new Error(`Connection was cancelled for backend "${this.name}"`);
+            }
             this._tools = toolsResult.tools;
             this._status = "connected";
             this._lastConnected = new Date();
             this.logger.info(`Backend "${this.name}" connected — ${this._tools.length} tools available`);
         }
         catch (err) {
-            this._status = "error";
-            this._error = err instanceof Error ? err.message : String(err);
-            this.logger.error(`Backend "${this.name}" failed to connect: ${this._error}`);
+            if (generation === this.connectionGeneration) {
+                this._status = "error";
+                this._error = err instanceof Error ? err.message : String(err);
+                this.logger.error(`Backend "${this.name}" failed to connect: ${this._error}`);
+            }
             throw err;
         }
     }
@@ -221,6 +231,7 @@ export class BackendInstance {
         return this.client.getPrompt({ name, arguments: args });
     }
     async disconnect() {
+        this.connectionGeneration++;
         this._status = "disconnected";
         try {
             await this.transport?.close();

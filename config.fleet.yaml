@@ -16,8 +16,10 @@ fleet:
     docker_ps: true
     endpoint_probe: false
     probe_timeout_ms: 750
-    # Auto-ingest running ToolHive MCP servers as callable gateway backends
+    # Auto-ingest running ToolHive MCP servers and static MCPU entries
+    # (for local stdio servers such as Copilot Studio) as callable gateway backends.
     auto_ingest: true
+    ingest_static_mcpu_config: true
     ingest_namespace_prefix: ""
     # Entries to skip: non-HTTP, mcpu itself, inspector
     ingest_skip:

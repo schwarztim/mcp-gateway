@@ -40,6 +40,7 @@ export class BackendInstance {
   private _lastConnected?: Date;
   private logger: Logger;
   private onToolsChanged?: () => void;
+  private connectionGeneration = 0;
 
   constructor(
     name: string,
@@ -87,6 +88,7 @@ export class BackendInstance {
       return;
     }
 
+    const generation = ++this.connectionGeneration;
     this._status = "starting";
     this._error = undefined;
 
@@ -104,8 +106,15 @@ export class BackendInstance {
         await this.connectSse(this.config);
       }
 
+      if (generation !== this.connectionGeneration || !this.client || this._status !== "starting") {
+        throw new Error(`Connection was cancelled for backend "${this.name}"`);
+      }
+
       // Fetch tools
       const toolsResult = await this.client.listTools();
+      if (generation !== this.connectionGeneration || !this.client || this._status !== "starting") {
+        throw new Error(`Connection was cancelled for backend "${this.name}"`);
+      }
       this._tools = toolsResult.tools;
       this._status = "connected";
       this._lastConnected = new Date();
@@ -113,11 +122,13 @@ export class BackendInstance {
         `Backend "${this.name}" connected — ${this._tools.length} tools available`
       );
     } catch (err) {
-      this._status = "error";
-      this._error = err instanceof Error ? err.message : String(err);
-      this.logger.error(
-        `Backend "${this.name}" failed to connect: ${this._error}`
-      );
+      if (generation === this.connectionGeneration) {
+        this._status = "error";
+        this._error = err instanceof Error ? err.message : String(err);
+        this.logger.error(
+          `Backend "${this.name}" failed to connect: ${this._error}`
+        );
+      }
       throw err;
     }
   }
@@ -293,6 +304,7 @@ export class BackendInstance {
   }
 
   async disconnect(): Promise<void> {
+    this.connectionGeneration++;
     this._status = "disconnected";
     try {
       await this.transport?.close();

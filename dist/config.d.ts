@@ -9,7 +9,12 @@ declare const StdioBackendSchema: z.ZodObject<{
     enabled: z.ZodDefault<z.ZodBoolean>;
     restart_policy: z.ZodDefault<z.ZodEnum<["always", "on-failure", "never"]>>;
     max_restarts: z.ZodDefault<z.ZodNumber>;
+    connect_timeout_ms: z.ZodDefault<z.ZodNumber>;
     health_check_interval: z.ZodDefault<z.ZodNumber>;
+    /** Informational: source of this backend entry (e.g. "fleet-mcpu-static") */
+    source: z.ZodOptional<z.ZodString>;
+    /** Informational: original description from the source config */
+    description: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
     transport: "stdio";
     command: string;
@@ -19,8 +24,11 @@ declare const StdioBackendSchema: z.ZodObject<{
     enabled: boolean;
     restart_policy: "never" | "always" | "on-failure";
     max_restarts: number;
+    connect_timeout_ms: number;
     health_check_interval: number;
     cwd?: string | undefined;
+    source?: string | undefined;
+    description?: string | undefined;
 }, {
     transport: "stdio";
     command: string;
@@ -31,7 +39,10 @@ declare const StdioBackendSchema: z.ZodObject<{
     enabled?: boolean | undefined;
     restart_policy?: "never" | "always" | "on-failure" | undefined;
     max_restarts?: number | undefined;
+    connect_timeout_ms?: number | undefined;
     health_check_interval?: number | undefined;
+    source?: string | undefined;
+    description?: string | undefined;
 }>;
 declare const SseBackendSchema: z.ZodObject<{
     transport: z.ZodLiteral<"sse">;
@@ -40,6 +51,7 @@ declare const SseBackendSchema: z.ZodObject<{
     enabled: z.ZodDefault<z.ZodBoolean>;
     reconnect_interval: z.ZodDefault<z.ZodNumber>;
     max_restarts: z.ZodDefault<z.ZodNumber>;
+    connect_timeout_ms: z.ZodDefault<z.ZodNumber>;
     restart_policy: z.ZodDefault<z.ZodEnum<["always", "on-failure", "never"]>>;
     headers: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodString>>;
     health_check_interval: z.ZodDefault<z.ZodNumber>;
@@ -51,6 +63,7 @@ declare const SseBackendSchema: z.ZodObject<{
     enabled: boolean;
     restart_policy: "never" | "always" | "on-failure";
     max_restarts: number;
+    connect_timeout_ms: number;
     health_check_interval: number;
     url: string;
     reconnect_interval: number;
@@ -64,11 +77,12 @@ declare const SseBackendSchema: z.ZodObject<{
     enabled?: boolean | undefined;
     restart_policy?: "never" | "always" | "on-failure" | undefined;
     max_restarts?: number | undefined;
+    connect_timeout_ms?: number | undefined;
     health_check_interval?: number | undefined;
-    reconnect_interval?: number | undefined;
-    headers?: Record<string, string> | undefined;
     source?: string | undefined;
     description?: string | undefined;
+    reconnect_interval?: number | undefined;
+    headers?: Record<string, string> | undefined;
 }>;
 /** Streamable HTTP transport used by ToolHive-managed MCP servers */
 declare const HttpBackendSchema: z.ZodObject<{
@@ -78,6 +92,7 @@ declare const HttpBackendSchema: z.ZodObject<{
     enabled: z.ZodDefault<z.ZodBoolean>;
     reconnect_interval: z.ZodDefault<z.ZodNumber>;
     max_restarts: z.ZodDefault<z.ZodNumber>;
+    connect_timeout_ms: z.ZodDefault<z.ZodNumber>;
     restart_policy: z.ZodDefault<z.ZodEnum<["always", "on-failure", "never"]>>;
     headers: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodString>>;
     health_check_interval: z.ZodDefault<z.ZodNumber>;
@@ -91,6 +106,7 @@ declare const HttpBackendSchema: z.ZodObject<{
     enabled: boolean;
     restart_policy: "never" | "always" | "on-failure";
     max_restarts: number;
+    connect_timeout_ms: number;
     health_check_interval: number;
     url: string;
     reconnect_interval: number;
@@ -104,11 +120,12 @@ declare const HttpBackendSchema: z.ZodObject<{
     enabled?: boolean | undefined;
     restart_policy?: "never" | "always" | "on-failure" | undefined;
     max_restarts?: number | undefined;
+    connect_timeout_ms?: number | undefined;
     health_check_interval?: number | undefined;
-    reconnect_interval?: number | undefined;
-    headers?: Record<string, string> | undefined;
     source?: string | undefined;
     description?: string | undefined;
+    reconnect_interval?: number | undefined;
+    headers?: Record<string, string> | undefined;
 }>;
 declare const BackendSchema: z.ZodDiscriminatedUnion<"transport", [z.ZodObject<{
     transport: z.ZodLiteral<"stdio">;
@@ -120,7 +137,12 @@ declare const BackendSchema: z.ZodDiscriminatedUnion<"transport", [z.ZodObject<{
     enabled: z.ZodDefault<z.ZodBoolean>;
     restart_policy: z.ZodDefault<z.ZodEnum<["always", "on-failure", "never"]>>;
     max_restarts: z.ZodDefault<z.ZodNumber>;
+    connect_timeout_ms: z.ZodDefault<z.ZodNumber>;
     health_check_interval: z.ZodDefault<z.ZodNumber>;
+    /** Informational: source of this backend entry (e.g. "fleet-mcpu-static") */
+    source: z.ZodOptional<z.ZodString>;
+    /** Informational: original description from the source config */
+    description: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
     transport: "stdio";
     command: string;
@@ -130,8 +152,11 @@ declare const BackendSchema: z.ZodDiscriminatedUnion<"transport", [z.ZodObject<{
     enabled: boolean;
     restart_policy: "never" | "always" | "on-failure";
     max_restarts: number;
+    connect_timeout_ms: number;
     health_check_interval: number;
     cwd?: string | undefined;
+    source?: string | undefined;
+    description?: string | undefined;
 }, {
     transport: "stdio";
     command: string;
@@ -142,7 +167,10 @@ declare const BackendSchema: z.ZodDiscriminatedUnion<"transport", [z.ZodObject<{
     enabled?: boolean | undefined;
     restart_policy?: "never" | "always" | "on-failure" | undefined;
     max_restarts?: number | undefined;
+    connect_timeout_ms?: number | undefined;
     health_check_interval?: number | undefined;
+    source?: string | undefined;
+    description?: string | undefined;
 }>, z.ZodObject<{
     transport: z.ZodLiteral<"sse">;
     url: z.ZodString;
@@ -150,6 +178,7 @@ declare const BackendSchema: z.ZodDiscriminatedUnion<"transport", [z.ZodObject<{
     enabled: z.ZodDefault<z.ZodBoolean>;
     reconnect_interval: z.ZodDefault<z.ZodNumber>;
     max_restarts: z.ZodDefault<z.ZodNumber>;
+    connect_timeout_ms: z.ZodDefault<z.ZodNumber>;
     restart_policy: z.ZodDefault<z.ZodEnum<["always", "on-failure", "never"]>>;
     headers: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodString>>;
     health_check_interval: z.ZodDefault<z.ZodNumber>;
@@ -161,6 +190,7 @@ declare const BackendSchema: z.ZodDiscriminatedUnion<"transport", [z.ZodObject<{
     enabled: boolean;
     restart_policy: "never" | "always" | "on-failure";
     max_restarts: number;
+    connect_timeout_ms: number;
     health_check_interval: number;
     url: string;
     reconnect_interval: number;
@@ -174,11 +204,12 @@ declare const BackendSchema: z.ZodDiscriminatedUnion<"transport", [z.ZodObject<{
     enabled?: boolean | undefined;
     restart_policy?: "never" | "always" | "on-failure" | undefined;
     max_restarts?: number | undefined;
+    connect_timeout_ms?: number | undefined;
     health_check_interval?: number | undefined;
-    reconnect_interval?: number | undefined;
-    headers?: Record<string, string> | undefined;
     source?: string | undefined;
     description?: string | undefined;
+    reconnect_interval?: number | undefined;
+    headers?: Record<string, string> | undefined;
 }>, z.ZodObject<{
     transport: z.ZodLiteral<"http">;
     url: z.ZodString;
@@ -186,6 +217,7 @@ declare const BackendSchema: z.ZodDiscriminatedUnion<"transport", [z.ZodObject<{
     enabled: z.ZodDefault<z.ZodBoolean>;
     reconnect_interval: z.ZodDefault<z.ZodNumber>;
     max_restarts: z.ZodDefault<z.ZodNumber>;
+    connect_timeout_ms: z.ZodDefault<z.ZodNumber>;
     restart_policy: z.ZodDefault<z.ZodEnum<["always", "on-failure", "never"]>>;
     headers: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodString>>;
     health_check_interval: z.ZodDefault<z.ZodNumber>;
@@ -199,6 +231,7 @@ declare const BackendSchema: z.ZodDiscriminatedUnion<"transport", [z.ZodObject<{
     enabled: boolean;
     restart_policy: "never" | "always" | "on-failure";
     max_restarts: number;
+    connect_timeout_ms: number;
     health_check_interval: number;
     url: string;
     reconnect_interval: number;
@@ -212,11 +245,12 @@ declare const BackendSchema: z.ZodDiscriminatedUnion<"transport", [z.ZodObject<{
     enabled?: boolean | undefined;
     restart_policy?: "never" | "always" | "on-failure" | undefined;
     max_restarts?: number | undefined;
+    connect_timeout_ms?: number | undefined;
     health_check_interval?: number | undefined;
-    reconnect_interval?: number | undefined;
-    headers?: Record<string, string> | undefined;
     source?: string | undefined;
     description?: string | undefined;
+    reconnect_interval?: number | undefined;
+    headers?: Record<string, string> | undefined;
 }>]>;
 declare const GatewayConfigSchema: z.ZodObject<{
     port: z.ZodDefault<z.ZodNumber>;
@@ -243,6 +277,12 @@ declare const GatewayConfigSchema: z.ZodObject<{
 declare const ToolHiveFleetConfigSchema: z.ZodObject<{
     app_support_dir: z.ZodOptional<z.ZodString>;
     mcpu_generated_config: z.ZodOptional<z.ZodString>;
+    /** Also ingest static MCPU config entries that are not in generated ToolHive config */
+    ingest_static_mcpu_config: z.ZodDefault<z.ZodBoolean>;
+    /** Static MCPU config path; defaults to ~/.config/mcpu/config.json */
+    mcpu_static_config: z.ZodOptional<z.ZodString>;
+    /** Additional flat or mcpServers-style MCPU config files to merge after generated/static configs */
+    additional_mcpu_configs: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
     docker_ps: z.ZodDefault<z.ZodBoolean>;
     endpoint_probe: z.ZodDefault<z.ZodBoolean>;
     probe_timeout_ms: z.ZodDefault<z.ZodNumber>;
@@ -255,6 +295,8 @@ declare const ToolHiveFleetConfigSchema: z.ZodObject<{
     /** Skip ingesting entries matching these names */
     ingest_skip: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
 }, "strip", z.ZodTypeAny, {
+    ingest_static_mcpu_config: boolean;
+    additional_mcpu_configs: string[];
     docker_ps: boolean;
     endpoint_probe: boolean;
     probe_timeout_ms: number;
@@ -264,9 +306,13 @@ declare const ToolHiveFleetConfigSchema: z.ZodObject<{
     ingest_skip: string[];
     app_support_dir?: string | undefined;
     mcpu_generated_config?: string | undefined;
+    mcpu_static_config?: string | undefined;
 }, {
     app_support_dir?: string | undefined;
     mcpu_generated_config?: string | undefined;
+    ingest_static_mcpu_config?: boolean | undefined;
+    mcpu_static_config?: string | undefined;
+    additional_mcpu_configs?: string[] | undefined;
     docker_ps?: boolean | undefined;
     endpoint_probe?: boolean | undefined;
     probe_timeout_ms?: number | undefined;
@@ -280,6 +326,12 @@ declare const FleetConfigSchema: z.ZodObject<{
     toolhive: z.ZodDefault<z.ZodObject<{
         app_support_dir: z.ZodOptional<z.ZodString>;
         mcpu_generated_config: z.ZodOptional<z.ZodString>;
+        /** Also ingest static MCPU config entries that are not in generated ToolHive config */
+        ingest_static_mcpu_config: z.ZodDefault<z.ZodBoolean>;
+        /** Static MCPU config path; defaults to ~/.config/mcpu/config.json */
+        mcpu_static_config: z.ZodOptional<z.ZodString>;
+        /** Additional flat or mcpServers-style MCPU config files to merge after generated/static configs */
+        additional_mcpu_configs: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
         docker_ps: z.ZodDefault<z.ZodBoolean>;
         endpoint_probe: z.ZodDefault<z.ZodBoolean>;
         probe_timeout_ms: z.ZodDefault<z.ZodNumber>;
@@ -292,6 +344,8 @@ declare const FleetConfigSchema: z.ZodObject<{
         /** Skip ingesting entries matching these names */
         ingest_skip: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
     }, "strip", z.ZodTypeAny, {
+        ingest_static_mcpu_config: boolean;
+        additional_mcpu_configs: string[];
         docker_ps: boolean;
         endpoint_probe: boolean;
         probe_timeout_ms: number;
@@ -301,9 +355,13 @@ declare const FleetConfigSchema: z.ZodObject<{
         ingest_skip: string[];
         app_support_dir?: string | undefined;
         mcpu_generated_config?: string | undefined;
+        mcpu_static_config?: string | undefined;
     }, {
         app_support_dir?: string | undefined;
         mcpu_generated_config?: string | undefined;
+        ingest_static_mcpu_config?: boolean | undefined;
+        mcpu_static_config?: string | undefined;
+        additional_mcpu_configs?: string[] | undefined;
         docker_ps?: boolean | undefined;
         endpoint_probe?: boolean | undefined;
         probe_timeout_ms?: number | undefined;
@@ -315,6 +373,8 @@ declare const FleetConfigSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     enabled: boolean;
     toolhive: {
+        ingest_static_mcpu_config: boolean;
+        additional_mcpu_configs: string[];
         docker_ps: boolean;
         endpoint_probe: boolean;
         probe_timeout_ms: number;
@@ -324,12 +384,16 @@ declare const FleetConfigSchema: z.ZodObject<{
         ingest_skip: string[];
         app_support_dir?: string | undefined;
         mcpu_generated_config?: string | undefined;
+        mcpu_static_config?: string | undefined;
     };
 }, {
     enabled?: boolean | undefined;
     toolhive?: {
         app_support_dir?: string | undefined;
         mcpu_generated_config?: string | undefined;
+        ingest_static_mcpu_config?: boolean | undefined;
+        mcpu_static_config?: string | undefined;
+        additional_mcpu_configs?: string[] | undefined;
         docker_ps?: boolean | undefined;
         endpoint_probe?: boolean | undefined;
         probe_timeout_ms?: number | undefined;
@@ -367,6 +431,12 @@ declare const ConfigFileSchema: z.ZodObject<{
         toolhive: z.ZodDefault<z.ZodObject<{
             app_support_dir: z.ZodOptional<z.ZodString>;
             mcpu_generated_config: z.ZodOptional<z.ZodString>;
+            /** Also ingest static MCPU config entries that are not in generated ToolHive config */
+            ingest_static_mcpu_config: z.ZodDefault<z.ZodBoolean>;
+            /** Static MCPU config path; defaults to ~/.config/mcpu/config.json */
+            mcpu_static_config: z.ZodOptional<z.ZodString>;
+            /** Additional flat or mcpServers-style MCPU config files to merge after generated/static configs */
+            additional_mcpu_configs: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
             docker_ps: z.ZodDefault<z.ZodBoolean>;
             endpoint_probe: z.ZodDefault<z.ZodBoolean>;
             probe_timeout_ms: z.ZodDefault<z.ZodNumber>;
@@ -379,6 +449,8 @@ declare const ConfigFileSchema: z.ZodObject<{
             /** Skip ingesting entries matching these names */
             ingest_skip: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
         }, "strip", z.ZodTypeAny, {
+            ingest_static_mcpu_config: boolean;
+            additional_mcpu_configs: string[];
             docker_ps: boolean;
             endpoint_probe: boolean;
             probe_timeout_ms: number;
@@ -388,9 +460,13 @@ declare const ConfigFileSchema: z.ZodObject<{
             ingest_skip: string[];
             app_support_dir?: string | undefined;
             mcpu_generated_config?: string | undefined;
+            mcpu_static_config?: string | undefined;
         }, {
             app_support_dir?: string | undefined;
             mcpu_generated_config?: string | undefined;
+            ingest_static_mcpu_config?: boolean | undefined;
+            mcpu_static_config?: string | undefined;
+            additional_mcpu_configs?: string[] | undefined;
             docker_ps?: boolean | undefined;
             endpoint_probe?: boolean | undefined;
             probe_timeout_ms?: number | undefined;
@@ -402,6 +478,8 @@ declare const ConfigFileSchema: z.ZodObject<{
     }, "strip", z.ZodTypeAny, {
         enabled: boolean;
         toolhive: {
+            ingest_static_mcpu_config: boolean;
+            additional_mcpu_configs: string[];
             docker_ps: boolean;
             endpoint_probe: boolean;
             probe_timeout_ms: number;
@@ -411,12 +489,16 @@ declare const ConfigFileSchema: z.ZodObject<{
             ingest_skip: string[];
             app_support_dir?: string | undefined;
             mcpu_generated_config?: string | undefined;
+            mcpu_static_config?: string | undefined;
         };
     }, {
         enabled?: boolean | undefined;
         toolhive?: {
             app_support_dir?: string | undefined;
             mcpu_generated_config?: string | undefined;
+            ingest_static_mcpu_config?: boolean | undefined;
+            mcpu_static_config?: string | undefined;
+            additional_mcpu_configs?: string[] | undefined;
             docker_ps?: boolean | undefined;
             endpoint_probe?: boolean | undefined;
             probe_timeout_ms?: number | undefined;
@@ -436,7 +518,12 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled: z.ZodDefault<z.ZodBoolean>;
         restart_policy: z.ZodDefault<z.ZodEnum<["always", "on-failure", "never"]>>;
         max_restarts: z.ZodDefault<z.ZodNumber>;
+        connect_timeout_ms: z.ZodDefault<z.ZodNumber>;
         health_check_interval: z.ZodDefault<z.ZodNumber>;
+        /** Informational: source of this backend entry (e.g. "fleet-mcpu-static") */
+        source: z.ZodOptional<z.ZodString>;
+        /** Informational: original description from the source config */
+        description: z.ZodOptional<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
         transport: "stdio";
         command: string;
@@ -446,8 +533,11 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled: boolean;
         restart_policy: "never" | "always" | "on-failure";
         max_restarts: number;
+        connect_timeout_ms: number;
         health_check_interval: number;
         cwd?: string | undefined;
+        source?: string | undefined;
+        description?: string | undefined;
     }, {
         transport: "stdio";
         command: string;
@@ -458,7 +548,10 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled?: boolean | undefined;
         restart_policy?: "never" | "always" | "on-failure" | undefined;
         max_restarts?: number | undefined;
+        connect_timeout_ms?: number | undefined;
         health_check_interval?: number | undefined;
+        source?: string | undefined;
+        description?: string | undefined;
     }>, z.ZodObject<{
         transport: z.ZodLiteral<"sse">;
         url: z.ZodString;
@@ -466,6 +559,7 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled: z.ZodDefault<z.ZodBoolean>;
         reconnect_interval: z.ZodDefault<z.ZodNumber>;
         max_restarts: z.ZodDefault<z.ZodNumber>;
+        connect_timeout_ms: z.ZodDefault<z.ZodNumber>;
         restart_policy: z.ZodDefault<z.ZodEnum<["always", "on-failure", "never"]>>;
         headers: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodString>>;
         health_check_interval: z.ZodDefault<z.ZodNumber>;
@@ -477,6 +571,7 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled: boolean;
         restart_policy: "never" | "always" | "on-failure";
         max_restarts: number;
+        connect_timeout_ms: number;
         health_check_interval: number;
         url: string;
         reconnect_interval: number;
@@ -490,11 +585,12 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled?: boolean | undefined;
         restart_policy?: "never" | "always" | "on-failure" | undefined;
         max_restarts?: number | undefined;
+        connect_timeout_ms?: number | undefined;
         health_check_interval?: number | undefined;
-        reconnect_interval?: number | undefined;
-        headers?: Record<string, string> | undefined;
         source?: string | undefined;
         description?: string | undefined;
+        reconnect_interval?: number | undefined;
+        headers?: Record<string, string> | undefined;
     }>, z.ZodObject<{
         transport: z.ZodLiteral<"http">;
         url: z.ZodString;
@@ -502,6 +598,7 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled: z.ZodDefault<z.ZodBoolean>;
         reconnect_interval: z.ZodDefault<z.ZodNumber>;
         max_restarts: z.ZodDefault<z.ZodNumber>;
+        connect_timeout_ms: z.ZodDefault<z.ZodNumber>;
         restart_policy: z.ZodDefault<z.ZodEnum<["always", "on-failure", "never"]>>;
         headers: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodString>>;
         health_check_interval: z.ZodDefault<z.ZodNumber>;
@@ -515,6 +612,7 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled: boolean;
         restart_policy: "never" | "always" | "on-failure";
         max_restarts: number;
+        connect_timeout_ms: number;
         health_check_interval: number;
         url: string;
         reconnect_interval: number;
@@ -528,11 +626,12 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled?: boolean | undefined;
         restart_policy?: "never" | "always" | "on-failure" | undefined;
         max_restarts?: number | undefined;
+        connect_timeout_ms?: number | undefined;
         health_check_interval?: number | undefined;
-        reconnect_interval?: number | undefined;
-        headers?: Record<string, string> | undefined;
         source?: string | undefined;
         description?: string | undefined;
+        reconnect_interval?: number | undefined;
+        headers?: Record<string, string> | undefined;
     }>]>>>;
 }, "strip", z.ZodTypeAny, {
     gateway: {
@@ -546,6 +645,8 @@ declare const ConfigFileSchema: z.ZodObject<{
     fleet: {
         enabled: boolean;
         toolhive: {
+            ingest_static_mcpu_config: boolean;
+            additional_mcpu_configs: string[];
             docker_ps: boolean;
             endpoint_probe: boolean;
             probe_timeout_ms: number;
@@ -555,6 +656,7 @@ declare const ConfigFileSchema: z.ZodObject<{
             ingest_skip: string[];
             app_support_dir?: string | undefined;
             mcpu_generated_config?: string | undefined;
+            mcpu_static_config?: string | undefined;
         };
     };
     backends: Record<string, {
@@ -566,14 +668,18 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled: boolean;
         restart_policy: "never" | "always" | "on-failure";
         max_restarts: number;
+        connect_timeout_ms: number;
         health_check_interval: number;
         cwd?: string | undefined;
+        source?: string | undefined;
+        description?: string | undefined;
     } | {
         transport: "sse";
         namespace: string;
         enabled: boolean;
         restart_policy: "never" | "always" | "on-failure";
         max_restarts: number;
+        connect_timeout_ms: number;
         health_check_interval: number;
         url: string;
         reconnect_interval: number;
@@ -586,6 +692,7 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled: boolean;
         restart_policy: "never" | "always" | "on-failure";
         max_restarts: number;
+        connect_timeout_ms: number;
         health_check_interval: number;
         url: string;
         reconnect_interval: number;
@@ -607,6 +714,9 @@ declare const ConfigFileSchema: z.ZodObject<{
         toolhive?: {
             app_support_dir?: string | undefined;
             mcpu_generated_config?: string | undefined;
+            ingest_static_mcpu_config?: boolean | undefined;
+            mcpu_static_config?: string | undefined;
+            additional_mcpu_configs?: string[] | undefined;
             docker_ps?: boolean | undefined;
             endpoint_probe?: boolean | undefined;
             probe_timeout_ms?: number | undefined;
@@ -626,7 +736,10 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled?: boolean | undefined;
         restart_policy?: "never" | "always" | "on-failure" | undefined;
         max_restarts?: number | undefined;
+        connect_timeout_ms?: number | undefined;
         health_check_interval?: number | undefined;
+        source?: string | undefined;
+        description?: string | undefined;
     } | {
         transport: "sse";
         namespace: string;
@@ -634,11 +747,12 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled?: boolean | undefined;
         restart_policy?: "never" | "always" | "on-failure" | undefined;
         max_restarts?: number | undefined;
+        connect_timeout_ms?: number | undefined;
         health_check_interval?: number | undefined;
-        reconnect_interval?: number | undefined;
-        headers?: Record<string, string> | undefined;
         source?: string | undefined;
         description?: string | undefined;
+        reconnect_interval?: number | undefined;
+        headers?: Record<string, string> | undefined;
     } | {
         transport: "http";
         namespace: string;
@@ -646,11 +760,12 @@ declare const ConfigFileSchema: z.ZodObject<{
         enabled?: boolean | undefined;
         restart_policy?: "never" | "always" | "on-failure" | undefined;
         max_restarts?: number | undefined;
+        connect_timeout_ms?: number | undefined;
         health_check_interval?: number | undefined;
-        reconnect_interval?: number | undefined;
-        headers?: Record<string, string> | undefined;
         source?: string | undefined;
         description?: string | undefined;
+        reconnect_interval?: number | undefined;
+        headers?: Record<string, string> | undefined;
     }> | undefined;
 }>;
 export type StdioBackendConfig = z.infer<typeof StdioBackendSchema>;
