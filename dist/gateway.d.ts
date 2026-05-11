@@ -10,6 +10,7 @@ export declare class Gateway {
     private sseTransports;
     private streamableTransports;
     private sessions;
+    private streamableSessionLastSeen;
     private healthTimer?;
     private httpServer?;
     private configWatcher?;
@@ -24,9 +25,18 @@ export declare class Gateway {
     private jsonToolResult;
     private handleMuxTool;
     private buildFleetInventory;
+    private getListLimit;
+    private getCharLimit;
+    private truncateText;
+    private compactJsonText;
+    private compactFleetEntry;
     private searchRegisteredTools;
     private getBackendStatus;
     private callBackendTool;
+    private compactBackendToolResult;
+    private touchStreamableSession;
+    private dropStreamableSession;
+    private reapIdleStreamableSessions;
     private notifyToolsChanged;
     private connectBackend;
     private withTimeout;

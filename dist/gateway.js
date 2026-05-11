@@ -11,7 +11,12 @@ import { loadConfig } from "./config.js";
 import { buildToolHiveFleetInventory } from "./fleet-inventory.js";
 import { buildFleetMcpuConfig } from "./fleet-mcpu-config.js";
 import { loadFleetBackendsFromMcpuConfig } from "./fleet-backend-ingestion.js";
-import { getMuxTools, isMuxToolName, MUX_TOOL_NAMES } from "./mux-tools.js";
+import { getMuxTools, isMuxToolName, MUX_TOOL_NAMES, extractCallToolArgs } from "./mux-tools.js";
+const DEFAULT_MUX_RESPONSE_CHAR_LIMIT = 60_000;
+const MAX_MUX_RESPONSE_CHAR_LIMIT = 200_000;
+const DEFAULT_MUX_LIST_LIMIT = 25;
+const MAX_MUX_LIST_LIMIT = 100;
+const STREAMABLE_SESSION_IDLE_TTL_MS = 60 * 60 * 1000;
 export class Gateway {
     config;
     configPath;
@@ -22,6 +27,7 @@ export class Gateway {
     sseTransports = new Map();
     streamableTransports = new Map();
     sessions = new Map();
+    streamableSessionLastSeen = new Map();
     healthTimer;
     httpServer;
     configWatcher;
@@ -169,6 +175,7 @@ export class Gateway {
                         });
                         return;
                     }
+                    this.touchStreamableSession(sessionId);
                 }
                 else if (req.method === "POST" && isInitializeRequest(req.body)) {
                     let initializedSessionId;
@@ -177,21 +184,23 @@ export class Gateway {
                         onsessioninitialized: (newSessionId) => {
                             initializedSessionId = newSessionId;
                             this.streamableTransports.set(newSessionId, transport);
+                            this.touchStreamableSession(newSessionId);
                         },
                     });
                     const sessionServer = this.createSessionServer();
                     transport.onclose = () => {
                         const sid = initializedSessionId ?? transport?.sessionId;
                         if (sid) {
-                            this.streamableTransports.delete(sid);
-                            this.sessions.delete(sid);
+                            this.dropStreamableSession(sid);
                         }
                     };
                     await sessionServer.server.connect(transport);
                     await transport.handleRequest(req, res, req.body);
                     const sid = initializedSessionId ?? transport.sessionId;
-                    if (sid)
+                    if (sid) {
                         this.sessions.set(sid, sessionServer);
+                        this.touchStreamableSession(sid);
+                    }
                     return;
                 }
                 else {
@@ -447,12 +456,14 @@ export class Gateway {
             return [...getMuxTools(), ...this.toolRegistry.getAllTools()];
         return this.toolRegistry.getAllTools();
     }
-    jsonToolResult(value) {
+    jsonToolResult(value, maxChars = DEFAULT_MUX_RESPONSE_CHAR_LIMIT) {
+        const text = JSON.stringify(value, null, 2);
+        const safeText = this.compactJsonText(text, maxChars);
         return {
             content: [
                 {
                     type: "text",
-                    text: JSON.stringify(value, null, 2),
+                    text: safeText,
                 },
             ],
         };
@@ -462,17 +473,14 @@ export class Gateway {
             case MUX_TOOL_NAMES.searchTools:
                 return this.jsonToolResult(this.searchRegisteredTools(args));
             case MUX_TOOL_NAMES.callTool: {
-                const target = typeof args.tool === "string" ? args.tool : "";
+                const { target, targetArgs } = extractCallToolArgs(args);
                 if (!target) {
                     return {
                         content: [{ type: "text", text: "gateway_call_tool requires a string 'tool' argument." }],
                         isError: true,
                     };
                 }
-                const targetArgs = typeof args.arguments === "object" && args.arguments !== null && !Array.isArray(args.arguments)
-                    ? args.arguments
-                    : {};
-                return this.callBackendTool(target, targetArgs);
+                return this.callBackendTool(target, targetArgs, this.getCharLimit(args, "maxOutputChars"));
             }
             case MUX_TOOL_NAMES.backendStatus:
                 return this.jsonToolResult(this.getBackendStatus(args));
@@ -485,16 +493,25 @@ export class Gateway {
                 }
                 const probe = args.probe === true;
                 const inventory = await this.buildFleetInventory(probe);
-                if (args.summaryOnly === false)
-                    return this.jsonToolResult(inventory);
-                return this.jsonToolResult({
+                const includeEntries = args.includeEntries === true || args.summaryOnly === false;
+                const limit = this.getListLimit(args);
+                const compact = {
                     generatedAt: inventory.generatedAt,
                     paths: inventory.paths,
                     probeEnabled: inventory.probeEnabled,
                     dockerPsEnabled: inventory.dockerPsEnabled,
                     summary: inventory.summary,
                     errors: inventory.errors,
-                });
+                    ...(includeEntries
+                        ? {
+                            entries: inventory.entries.slice(0, limit).map((entry) => this.compactFleetEntry(entry)),
+                            returnedEntries: Math.min(inventory.entries.length, limit),
+                            omittedEntries: Math.max(0, inventory.entries.length - limit),
+                            note: "MCP output is capped to avoid context bloat. Use the loopback admin API /admin/fleet/inventory for full raw inventory when needed outside model context.",
+                        }
+                        : {}),
+                };
+                return this.jsonToolResult(compact);
             }
             case MUX_TOOL_NAMES.mcpuConfig: {
                 if (!this.config.fleet.enabled) {
@@ -505,7 +522,29 @@ export class Gateway {
                 }
                 const inventory = await this.buildFleetInventory(args.probe === true);
                 const report = buildFleetMcpuConfig(inventory);
-                return this.jsonToolResult(args.configOnly === true ? report.config : report);
+                const limit = this.getListLimit(args);
+                const configEntries = Object.entries(report.config);
+                const payload = {
+                    mode: report.mode,
+                    generatedAt: report.generatedAt,
+                    summary: report.summary,
+                    returnedConfigEntries: args.configOnly === true ? Math.min(configEntries.length, limit) : 0,
+                    omittedConfigEntries: args.configOnly === true ? Math.max(0, configEntries.length - limit) : configEntries.length,
+                    ...(args.configOnly === true
+                        ? {
+                            config: Object.fromEntries(configEntries.slice(0, limit)),
+                        }
+                        : {}),
+                    ...(args.includeEntries === true
+                        ? {
+                            entries: report.entries.slice(0, limit),
+                            returnedEntries: Math.min(report.entries.length, limit),
+                            omittedEntries: Math.max(0, report.entries.length - limit),
+                        }
+                        : {}),
+                    note: "MCP output is capped to avoid loading the full ToolHive/MCPU fleet into model context. Use the loopback admin API /admin/fleet/mcpu-config?configOnly=1 for full machine-consumable config outside model context.",
+                };
+                return this.jsonToolResult(payload);
             }
         }
     }
@@ -515,12 +554,70 @@ export class Gateway {
             endpoint_probe: probe || this.config.fleet.toolhive.endpoint_probe,
         });
     }
+    getListLimit(args) {
+        const raw = args.limit;
+        if (typeof raw !== "number" || !Number.isFinite(raw))
+            return DEFAULT_MUX_LIST_LIMIT;
+        return Math.max(1, Math.min(Math.floor(raw), MAX_MUX_LIST_LIMIT));
+    }
+    getCharLimit(args, key) {
+        const raw = args[key];
+        if (typeof raw !== "number" || !Number.isFinite(raw))
+            return DEFAULT_MUX_RESPONSE_CHAR_LIMIT;
+        return Math.max(1_000, Math.min(Math.floor(raw), MAX_MUX_RESPONSE_CHAR_LIMIT));
+    }
+    truncateText(value, maxChars) {
+        if (value === undefined || value.length <= maxChars)
+            return value;
+        return `${value.slice(0, maxChars)}\n...[truncated ${value.length - maxChars} chars by mcp-gateway]`;
+    }
+    compactJsonText(text, maxChars) {
+        if (text.length <= maxChars)
+            return text;
+        return JSON.stringify({
+            gatewayTruncated: true,
+            originalChars: text.length,
+            maxChars,
+            preview: text.slice(0, maxChars),
+            note: "Response exceeded the MCP gateway safe payload cap. Narrow the request or use the loopback admin API outside model context for full raw data.",
+        }, null, 2);
+    }
+    compactFleetEntry(entry) {
+        return {
+            name: entry.name,
+            health: entry.health,
+            reasons: entry.reasons.slice(0, 5),
+            mcpuExposed: entry.mcpu.exposed,
+            endpoint: {
+                checked: entry.endpoint.checked,
+                tcpOpen: entry.endpoint.tcpOpen,
+                error: this.truncateText(entry.endpoint.error, 240),
+            },
+            runConfig: entry.runConfig
+                ? {
+                    image: entry.runConfig.image,
+                    host: entry.runConfig.host,
+                    port: entry.runConfig.port,
+                    proxyMode: entry.runConfig.proxyMode,
+                    envKeyCount: entry.runConfig.envKeys.length,
+                    secretRefCount: entry.runConfig.secretRefs.length,
+                }
+                : undefined,
+            docker: entry.docker
+                ? {
+                    name: entry.docker.name,
+                    image: entry.docker.image,
+                    state: entry.docker.state,
+                    status: this.truncateText(entry.docker.status, 160),
+                }
+                : undefined,
+            safeAutomaticRepairHints: entry.repairHints.filter((hint) => hint.safeAutomatic).length,
+        };
+    }
     searchRegisteredTools(args) {
         const query = typeof args.query === "string" ? args.query : "";
         const backendFilter = typeof args.backend === "string" ? args.backend : "";
-        const limit = typeof args.limit === "number" && Number.isFinite(args.limit)
-            ? Math.max(1, Math.min(Math.floor(args.limit), 100))
-            : 25;
+        const limit = this.getListLimit(args);
         const matches = this.toolRegistry.getAllEntries()
             .filter((entry) => {
             const backendConfig = this.backends.get(entry.backendName)?.config;
@@ -547,11 +644,11 @@ export class Gateway {
             name: entry.namespacedName,
             backend: entry.backendName,
             originalName: entry.originalName,
-            description: entry.tool.description,
+            description: this.truncateText(entry.tool.description, 300),
             backendDescription: (() => {
                 const backendConfig = this.backends.get(entry.backendName)?.config;
                 return backendConfig && "description" in backendConfig
-                    ? backendConfig.description
+                    ? this.truncateText(backendConfig.description, 300)
                     : undefined;
             })(),
         }));
@@ -563,6 +660,9 @@ export class Gateway {
     }
     getBackendStatus(args) {
         const backendFilter = typeof args.backend === "string" ? args.backend : "";
+        const limit = this.getListLimit(args);
+        const includeErrors = args.includeErrors === true;
+        const includeDescriptions = args.includeDescriptions === true;
         const toolStats = this.toolRegistry.getStats();
         const backends = Array.from(this.backends.entries())
             .filter(([name, backend]) => !backendFilter ||
@@ -572,20 +672,29 @@ export class Gateway {
                 backend.config.transport,
                 "description" in backend.config ? backend.config.description ?? "" : "",
             ].join(" "), backendFilter))
+            .slice(0, limit)
             .map(([name, backend]) => ({
             name,
             namespace: backend.config.namespace,
             transport: backend.config.transport,
             status: backend.status,
             toolCount: toolStats[name] ?? 0,
-            error: backend.error,
+            ...(includeErrors ? { error: this.truncateText(backend.error, 500) } : {}),
             restartCount: backend.restartCount,
             lastConnected: backend.lastConnected?.toISOString(),
-            description: "description" in backend.config ? backend.config.description : undefined,
+            ...(includeDescriptions && "description" in backend.config
+                ? { description: this.truncateText(backend.config.description, 300) }
+                : {}),
         }));
-        return { totalBackends: this.backends.size, backends };
+        return {
+            totalBackends: this.backends.size,
+            returnedBackends: backends.length,
+            omittedBackends: Math.max(0, this.backends.size - backends.length),
+            totalRegisteredTools: this.toolRegistry.getAllTools().length,
+            backends,
+        };
     }
-    async callBackendTool(toolName, args) {
+    async callBackendTool(toolName, args, maxOutputChars = DEFAULT_MUX_RESPONSE_CHAR_LIMIT) {
         const entry = this.toolRegistry.resolve(toolName);
         if (!entry) {
             return {
@@ -612,7 +721,7 @@ export class Gateway {
         }
         try {
             const result = await backend.callTool(entry.originalName, args);
-            return result;
+            return this.compactBackendToolResult(result, maxOutputChars);
         }
         catch (err) {
             return {
@@ -624,6 +733,82 @@ export class Gateway {
                 ],
                 isError: true,
             };
+        }
+    }
+    compactBackendToolResult(result, maxOutputChars) {
+        const record = result && typeof result === "object" ? result : {};
+        const content = Array.isArray(record.content) ? record.content : [];
+        let remaining = maxOutputChars;
+        let truncated = false;
+        const compactContent = content.map((item) => {
+            if (!item || typeof item !== "object")
+                return item;
+            const entry = item;
+            if (entry.type === "text" && typeof entry.text === "string") {
+                if (remaining <= 0) {
+                    truncated = true;
+                    return { ...entry, text: "[mcp-gateway truncated additional text content]" };
+                }
+                if (entry.text.length > remaining) {
+                    truncated = true;
+                    const text = `${entry.text.slice(0, remaining)}\n...[truncated ${entry.text.length - remaining} chars by mcp-gateway]`;
+                    remaining = 0;
+                    return { ...entry, text };
+                }
+                remaining -= entry.text.length;
+                return entry;
+            }
+            const serialized = JSON.stringify(entry);
+            if (serialized.length > Math.max(1_000, remaining)) {
+                truncated = true;
+                remaining = 0;
+                return {
+                    type: "text",
+                    text: `[mcp-gateway dropped oversized non-text content item: ${serialized.length} serialized chars]`,
+                };
+            }
+            remaining -= serialized.length;
+            return entry;
+        });
+        if (truncated) {
+            compactContent.unshift({
+                type: "text",
+                text: `mcp-gateway compacted the backend response to stay under ${maxOutputChars} chars. Narrow the request or call a more specific backend tool for full detail.`,
+            });
+        }
+        return {
+            content: compactContent,
+            ...(record.isError === true ? { isError: true } : {}),
+        };
+    }
+    touchStreamableSession(sessionId) {
+        this.streamableSessionLastSeen.set(sessionId, Date.now());
+    }
+    dropStreamableSession(sessionId) {
+        this.streamableTransports.delete(sessionId);
+        this.streamableSessionLastSeen.delete(sessionId);
+        this.sessions.delete(sessionId);
+    }
+    async reapIdleStreamableSessions(now = Date.now()) {
+        for (const [sessionId, lastSeen] of this.streamableSessionLastSeen) {
+            if (now - lastSeen < STREAMABLE_SESSION_IDLE_TTL_MS)
+                continue;
+            const transport = this.streamableTransports.get(sessionId);
+            const sessionServer = this.sessions.get(sessionId);
+            this.logger.info(`Reaping idle streamable MCP session ${sessionId}`);
+            this.dropStreamableSession(sessionId);
+            try {
+                await sessionServer?.close();
+            }
+            catch {
+                // ignore cleanup failures
+            }
+            try {
+                await transport?.close();
+            }
+            catch {
+                // ignore cleanup failures
+            }
         }
     }
     notifyToolsChanged() {
@@ -911,6 +1096,7 @@ export class Gateway {
                 // ignore
             }
         }
+        this.streamableSessionLastSeen.clear();
         if (this.httpServer) {
             await new Promise((resolve, reject) => {
                 this.httpServer?.close((err) => {
@@ -926,6 +1112,7 @@ export class Gateway {
     startHealthMonitor() {
         const interval = 30_000; // 30 seconds
         this.healthTimer = setInterval(async () => {
+            await this.reapIdleStreamableSessions();
             for (const [name, backend] of this.backends) {
                 if (backend.status === "disconnected" || backend.status === "error") {
                     this.logger.info(`Health check: backend "${name}" is ${backend.status}, attempting reconnect...`);
