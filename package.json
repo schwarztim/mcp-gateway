@@ -9,7 +9,9 @@
     "start": "node dist/index.js",
     "start:fleet": "MCP_GATEWAY_CONFIG=config.fleet.yaml node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "harness": "node dist/resilience-harness.js"
+    "harness": "node dist/resilience-harness.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
@@ -25,6 +27,7 @@
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^2.0.0"
   }
 }
