@@ -23,14 +23,12 @@ fleet:
     # Skip non-MCP and non-functional entries
     ingest_skip:
       - mcpu
-      - karen
       - inspector
       - hermes
       - ghost-os
       - open-swarm
       - atlassian
       - ms365
-      - az-teams-mcp
 
 backends:
   # Copilot Studio runs as a local stdio server, not in THV
