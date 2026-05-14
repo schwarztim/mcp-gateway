@@ -68,6 +68,10 @@ const GatewayConfigSchema = z.object({
     log_level: z.enum(["debug", "info", "warn", "error"]).default("info"),
     tool_prefix: z.string().default(""),
     tool_exposure: z.enum(["namespaced", "mux", "both"]).default("namespaced"),
+    /** Stateless Streamable HTTP prevents stale in-memory session IDs after gateway restarts */
+    streamable_http_stateless: z.boolean().default(true),
+    /** JSON responses keep facade calls request/response and avoid long-lived per-call SSE streams */
+    streamable_http_json_response: z.boolean().default(true),
 });
 const ToolHiveFleetConfigSchema = z.object({
     app_support_dir: z.string().optional(),

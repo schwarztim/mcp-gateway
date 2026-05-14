@@ -22,6 +22,8 @@ Use `config.fleet.yaml` for local ToolHive/MCPU fleet mode, or create your own `
 
 - Bind to `127.0.0.1` unless you have an explicit reason to expose the gateway.
 - Use `gateway.tool_exposure: "mux"` for large fleets.
+- Keep Streamable HTTP stateless for facade-only use so restarted gateways do not strand clients on stale in-memory session IDs.
+- Treat `gateway_fetch_artifact` as an explicit paging tool for oversized results; do not use fleet inventory or search calls as raw schema dumps.
 - Set `MCP_GATEWAY_ADMIN_TOKEN` before exposing admin routes outside localhost.
 - Keep MCPU or your existing MCP routing registered until this gateway is proven stable in your environment.
 
@@ -35,4 +37,4 @@ curl http://127.0.0.1:3100/admin/status
 
 ## Current scope
 
-The gateway is focused on local-first fleet routing, context preservation, and resilience around ToolHive/MCPU-generated HTTP backends. Repair actions are intentionally conservative: fleet inspection and ingestion are read-only and do not mutate Docker or ToolHive state.
+The gateway is focused on local-first fleet routing, context preservation, and resilience around ToolHive/MCPU-generated HTTP backends. In mux mode it behaves as a facade: clients see a small gateway tool surface, backend resources/prompts are not listed, empty search does not dump inventory, and large responses are capped with artifact references. Repair actions are intentionally conservative: fleet inspection and ingestion are read-only and do not mutate Docker or ToolHive state.

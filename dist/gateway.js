@@ -12,10 +12,14 @@ import { buildToolHiveFleetInventory } from "./fleet-inventory.js";
 import { buildFleetMcpuConfig } from "./fleet-mcpu-config.js";
 import { loadFleetBackendsFromMcpuConfig } from "./fleet-backend-ingestion.js";
 import { getMuxTools, isMuxToolName, MUX_TOOL_NAMES, extractCallToolArgs } from "./mux-tools.js";
-const DEFAULT_MUX_RESPONSE_CHAR_LIMIT = 60_000;
-const MAX_MUX_RESPONSE_CHAR_LIMIT = 200_000;
-const DEFAULT_MUX_LIST_LIMIT = 25;
-const MAX_MUX_LIST_LIMIT = 100;
+const DEFAULT_MUX_RESPONSE_CHAR_LIMIT = 6_000;
+const STATUS_RESPONSE_CHAR_LIMIT = 4_000;
+const DESCRIBE_RESPONSE_CHAR_LIMIT = 12_000;
+const MAX_MUX_RESPONSE_CHAR_LIMIT = 32_000;
+const DEFAULT_MUX_LIST_LIMIT = 10;
+const MAX_MUX_LIST_LIMIT = 50;
+const MAX_ARTIFACTS = 100;
+const MAX_ARTIFACT_CHARS = 2_000_000;
 const STREAMABLE_SESSION_IDLE_TTL_MS = 60 * 60 * 1000;
 export class Gateway {
     config;
@@ -28,6 +32,7 @@ export class Gateway {
     streamableTransports = new Map();
     sessions = new Map();
     streamableSessionLastSeen = new Map();
+    artifacts = new Map();
     healthTimer;
     httpServer;
     configWatcher;
@@ -59,6 +64,8 @@ export class Gateway {
         });
         // Resource handlers
         lowLevel.setRequestHandler(ListResourcesRequestSchema, async () => {
+            if (this.isFacadeMode())
+                return { resources: [] };
             const allResources = [];
             for (const [name, backend] of this.backends) {
                 if (backend.status !== "connected")
@@ -79,6 +86,9 @@ export class Gateway {
         });
         lowLevel.setRequestHandler(ReadResourceRequestSchema, async (request) => {
             const uri = request.params.uri;
+            if (this.isFacadeMode()) {
+                return { contents: [{ uri, text: "Resource passthrough is disabled in mcp-gateway mux facade mode." }] };
+            }
             // Try each backend until one handles the URI
             for (const [, backend] of this.backends) {
                 if (backend.status !== "connected")
@@ -95,6 +105,8 @@ export class Gateway {
         });
         // Prompt handlers
         lowLevel.setRequestHandler(ListPromptsRequestSchema, async () => {
+            if (this.isFacadeMode())
+                return { prompts: [] };
             const allPrompts = [];
             for (const [name, backend] of this.backends) {
                 if (backend.status !== "connected")
@@ -115,6 +127,19 @@ export class Gateway {
         });
         lowLevel.setRequestHandler(GetPromptRequestSchema, async (request) => {
             const promptName = request.params.name;
+            if (this.isFacadeMode()) {
+                return {
+                    messages: [
+                        {
+                            role: "assistant",
+                            content: {
+                                type: "text",
+                                text: "Prompt passthrough is disabled in mcp-gateway mux facade mode.",
+                            },
+                        },
+                    ],
+                };
+            }
             // Find the backend by namespace prefix
             for (const [name, backend] of this.backends) {
                 if (backend.status !== "connected")
@@ -162,6 +187,10 @@ export class Gateway {
         this.app.use("/mcp", express.json({ limit: "10mb" }));
         // Streamable HTTP endpoint for MCP clients that support type=http (Claude Code, Copilot CLI)
         this.app.all("/mcp", async (req, res) => {
+            if (this.config.gateway.streamable_http_stateless) {
+                await this.handleStatelessStreamableRequest(req, res);
+                return;
+            }
             const sessionId = this.headerValue(req.headers["mcp-session-id"]);
             let transport;
             try {
@@ -448,6 +477,44 @@ export class Gateway {
     headerValue(value) {
         return Array.isArray(value) ? value[0] : value;
     }
+    async handleStatelessStreamableRequest(req, res) {
+        const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: undefined,
+            enableJsonResponse: this.config.gateway.streamable_http_json_response,
+        });
+        const sessionServer = this.createSessionServer();
+        try {
+            await sessionServer.server.connect(transport);
+            await transport.handleRequest(req, res, req.body);
+        }
+        catch (err) {
+            this.logger.error(`Stateless Streamable HTTP request failed: ${err instanceof Error ? err.message : String(err)}`);
+            if (!res.headersSent) {
+                res.status(500).json({
+                    jsonrpc: "2.0",
+                    error: { code: -32603, message: "Internal server error" },
+                    id: null,
+                });
+            }
+        }
+        finally {
+            try {
+                await sessionServer.close();
+            }
+            catch (err) {
+                this.logger.debug(`Stateless session cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            try {
+                await transport.close();
+            }
+            catch (err) {
+                this.logger.debug(`Stateless transport cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+    }
+    isFacadeMode() {
+        return this.config.gateway.tool_exposure === "mux";
+    }
     getExposedTools() {
         const mode = this.config.gateway.tool_exposure;
         if (mode === "mux")
@@ -472,6 +539,8 @@ export class Gateway {
         switch (toolName) {
             case MUX_TOOL_NAMES.searchTools:
                 return this.jsonToolResult(this.searchRegisteredTools(args));
+            case MUX_TOOL_NAMES.describeTool:
+                return this.jsonToolResult(this.describeRegisteredTool(args), DESCRIBE_RESPONSE_CHAR_LIMIT);
             case MUX_TOOL_NAMES.callTool: {
                 const { target, targetArgs } = extractCallToolArgs(args);
                 if (!target) {
@@ -482,8 +551,10 @@ export class Gateway {
                 }
                 return this.callBackendTool(target, targetArgs, this.getCharLimit(args, "maxOutputChars"));
             }
+            case MUX_TOOL_NAMES.fetchArtifact:
+                return this.jsonToolResult(this.fetchArtifact(args), DEFAULT_MUX_RESPONSE_CHAR_LIMIT);
             case MUX_TOOL_NAMES.backendStatus:
-                return this.jsonToolResult(this.getBackendStatus(args));
+                return this.jsonToolResult(this.getBackendStatus(args), STATUS_RESPONSE_CHAR_LIMIT);
             case MUX_TOOL_NAMES.fleetInventory: {
                 if (!this.config.fleet.enabled) {
                     return {
@@ -511,7 +582,7 @@ export class Gateway {
                         }
                         : {}),
                 };
-                return this.jsonToolResult(compact);
+                return this.jsonToolResult(compact, DEFAULT_MUX_RESPONSE_CHAR_LIMIT);
             }
             case MUX_TOOL_NAMES.mcpuConfig: {
                 if (!this.config.fleet.enabled) {
@@ -544,7 +615,7 @@ export class Gateway {
                         : {}),
                     note: "MCP output is capped to avoid loading the full ToolHive/MCPU fleet into model context. Use the loopback admin API /admin/fleet/mcpu-config?configOnly=1 for full machine-consumable config outside model context.",
                 };
-                return this.jsonToolResult(payload);
+                return this.jsonToolResult(payload, DEFAULT_MUX_RESPONSE_CHAR_LIMIT);
             }
         }
     }
@@ -574,13 +645,73 @@ export class Gateway {
     compactJsonText(text, maxChars) {
         if (text.length <= maxChars)
             return text;
+        const artifactId = this.storeArtifact("json-response", text);
         return JSON.stringify({
             gatewayTruncated: true,
             originalChars: text.length,
             maxChars,
             preview: text.slice(0, maxChars),
+            artifactId,
+            next: {
+                tool: MUX_TOOL_NAMES.fetchArtifact,
+                artifactId,
+                offset: maxChars,
+                maxChars: DEFAULT_MUX_RESPONSE_CHAR_LIMIT,
+            },
             note: "Response exceeded the MCP gateway safe payload cap. Narrow the request or use the loopback admin API outside model context for full raw data.",
         }, null, 2);
+    }
+    storeArtifact(kind, value) {
+        const id = `gw_artifact_${randomUUID()}`;
+        const text = value.length > MAX_ARTIFACT_CHARS
+            ? `${value.slice(0, MAX_ARTIFACT_CHARS)}\n...[artifact truncated ${value.length - MAX_ARTIFACT_CHARS} chars at storage boundary]`
+            : value;
+        this.artifacts.set(id, {
+            id,
+            kind,
+            text,
+            originalChars: value.length,
+            storedAt: new Date().toISOString(),
+        });
+        while (this.artifacts.size > MAX_ARTIFACTS) {
+            const oldest = this.artifacts.keys().next().value;
+            if (!oldest)
+                break;
+            this.artifacts.delete(oldest);
+        }
+        return id;
+    }
+    fetchArtifact(args) {
+        const artifactId = typeof args.artifactId === "string" ? args.artifactId : "";
+        const artifact = this.artifacts.get(artifactId);
+        if (!artifact) {
+            return {
+                error: "artifact_not_found",
+                artifactId,
+                note: "Artifacts are in-memory and may disappear after gateway restart or artifact cache eviction.",
+            };
+        }
+        const rawOffset = args.offset;
+        const offset = typeof rawOffset === "number" && Number.isFinite(rawOffset)
+            ? Math.max(0, Math.floor(rawOffset))
+            : 0;
+        const maxChars = this.getCharLimit(args, "maxChars");
+        const text = artifact.text.slice(offset, offset + maxChars);
+        const nextOffset = offset + text.length;
+        return {
+            artifactId,
+            kind: artifact.kind,
+            storedAt: artifact.storedAt,
+            originalChars: artifact.originalChars,
+            storedChars: artifact.text.length,
+            offset,
+            returnedChars: text.length,
+            text,
+            hasMore: nextOffset < artifact.text.length,
+            next: nextOffset < artifact.text.length
+                ? { tool: MUX_TOOL_NAMES.fetchArtifact, artifactId, offset: nextOffset, maxChars }
+                : undefined,
+        };
     }
     compactFleetEntry(entry) {
         return {
@@ -618,8 +749,17 @@ export class Gateway {
         const query = typeof args.query === "string" ? args.query : "";
         const backendFilter = typeof args.backend === "string" ? args.backend : "";
         const limit = this.getListLimit(args);
-        const matches = this.toolRegistry.getAllEntries()
-            .filter((entry) => {
+        const totalRegisteredTools = this.toolRegistry.getAllTools().length;
+        if (!query.trim() && !backendFilter.trim()) {
+            return {
+                totalRegisteredTools,
+                returned: 0,
+                matches: [],
+                queryRequired: true,
+                note: "gateway_search_tools requires a query or backend filter in facade mode; it will not dump the full backend tool inventory into model context.",
+            };
+        }
+        const filteredEntries = this.toolRegistry.getAllEntries().filter((entry) => {
             const backendConfig = this.backends.get(entry.backendName)?.config;
             if (backendFilter &&
                 !this.matchesSearch([
@@ -638,40 +778,74 @@ export class Gateway {
                 entry.tool.description ?? "",
             ].join(" ");
             return this.matchesSearch(haystack, query);
-        })
-            .slice(0, limit)
-            .map((entry) => ({
+        });
+        const matches = filteredEntries.slice(0, limit).map((entry) => ({
             name: entry.namespacedName,
             backend: entry.backendName,
             originalName: entry.originalName,
-            description: this.truncateText(entry.tool.description, 300),
-            backendDescription: (() => {
-                const backendConfig = this.backends.get(entry.backendName)?.config;
-                return backendConfig && "description" in backendConfig
-                    ? this.truncateText(backendConfig.description, 300)
-                    : undefined;
-            })(),
+            description: this.truncateText(entry.tool.description, 180),
+            describeWith: {
+                tool: MUX_TOOL_NAMES.describeTool,
+                arguments: { tool: entry.namespacedName },
+            },
         }));
         return {
-            totalRegisteredTools: this.toolRegistry.getAllTools().length,
+            totalRegisteredTools,
             returned: matches.length,
+            omittedByLimit: Math.max(0, filteredEntries.length - matches.length),
             matches,
+        };
+    }
+    describeRegisteredTool(args) {
+        const toolName = typeof args.tool === "string" ? args.tool : "";
+        const entry = this.toolRegistry.resolve(toolName);
+        if (!entry) {
+            return {
+                error: "unknown_tool",
+                tool: toolName,
+                note: `Use ${MUX_TOOL_NAMES.searchTools} with a specific query to find a namespaced backend tool.`,
+            };
+        }
+        const backendConfig = this.backends.get(entry.backendName)?.config;
+        return {
+            name: entry.namespacedName,
+            backend: entry.backendName,
+            namespace: backendConfig?.namespace,
+            transport: backendConfig?.transport,
+            originalName: entry.originalName,
+            description: entry.tool.description,
+            inputSchema: entry.tool.inputSchema,
+            callWith: {
+                tool: MUX_TOOL_NAMES.callTool,
+                arguments: {
+                    tool: entry.namespacedName,
+                    arguments: {},
+                },
+            },
+            note: "This is a lazy, single-tool description. Backend-wide schema dumps are intentionally not exposed in facade mode.",
         };
     }
     getBackendStatus(args) {
         const backendFilter = typeof args.backend === "string" ? args.backend : "";
         const limit = this.getListLimit(args);
+        const includeBackends = args.includeBackends === true || Boolean(backendFilter.trim());
         const includeErrors = args.includeErrors === true;
         const includeDescriptions = args.includeDescriptions === true;
         const toolStats = this.toolRegistry.getStats();
-        const backends = Array.from(this.backends.entries())
+        const allBackends = Array.from(this.backends.entries());
+        const statusCounts = allBackends.reduce((acc, [, backend]) => {
+            acc[backend.status] = (acc[backend.status] ?? 0) + 1;
+            return acc;
+        }, {});
+        const matchedBackends = allBackends
             .filter(([name, backend]) => !backendFilter ||
             this.matchesSearch([
                 name,
                 backend.config.namespace,
                 backend.config.transport,
                 "description" in backend.config ? backend.config.description ?? "" : "",
-            ].join(" "), backendFilter))
+            ].join(" "), backendFilter));
+        const compactBackends = matchedBackends
             .slice(0, limit)
             .map(([name, backend]) => ({
             name,
@@ -686,12 +860,29 @@ export class Gateway {
                 ? { description: this.truncateText(backend.config.description, 300) }
                 : {}),
         }));
+        const degradedBackends = allBackends
+            .filter(([, backend]) => backend.status !== "connected")
+            .slice(0, limit)
+            .map(([name, backend]) => ({
+            name,
+            status: backend.status,
+            transport: backend.config.transport,
+            toolCount: toolStats[name] ?? 0,
+            restartCount: backend.restartCount,
+            ...(includeErrors ? { error: this.truncateText(backend.error, 300) } : {}),
+        }));
         return {
             totalBackends: this.backends.size,
-            returnedBackends: backends.length,
-            omittedBackends: Math.max(0, this.backends.size - backends.length),
+            connectedBackends: statusCounts.connected ?? 0,
+            statusCounts,
             totalRegisteredTools: this.toolRegistry.getAllTools().length,
-            backends,
+            returnedBackends: includeBackends ? compactBackends.length : 0,
+            omittedBackends: includeBackends ? Math.max(0, matchedBackends.length - compactBackends.length) : matchedBackends.length,
+            degradedBackends,
+            backends: includeBackends ? compactBackends : undefined,
+            note: includeBackends
+                ? "Backend list is capped. Omit includeBackends for summary-only status."
+                : "Summary-only facade response. Set backend=<name> or includeBackends=true for a capped backend list.",
         };
     }
     async callBackendTool(toolName, args, maxOutputChars = DEFAULT_MUX_RESPONSE_CHAR_LIMIT) {
@@ -751,7 +942,8 @@ export class Gateway {
                 }
                 if (entry.text.length > remaining) {
                     truncated = true;
-                    const text = `${entry.text.slice(0, remaining)}\n...[truncated ${entry.text.length - remaining} chars by mcp-gateway]`;
+                    const artifactId = this.storeArtifact("backend-tool-text", entry.text);
+                    const text = `${entry.text.slice(0, remaining)}\n...[truncated ${entry.text.length - remaining} chars by mcp-gateway; artifactId=${artifactId}; fetch next page with ${MUX_TOOL_NAMES.fetchArtifact}]`;
                     remaining = 0;
                     return { ...entry, text };
                 }
@@ -761,10 +953,11 @@ export class Gateway {
             const serialized = JSON.stringify(entry);
             if (serialized.length > Math.max(1_000, remaining)) {
                 truncated = true;
+                const artifactId = this.storeArtifact("backend-tool-json", serialized);
                 remaining = 0;
                 return {
                     type: "text",
-                    text: `[mcp-gateway dropped oversized non-text content item: ${serialized.length} serialized chars]`,
+                    text: `[mcp-gateway stored oversized non-text content item as ${artifactId}: ${serialized.length} serialized chars; fetch a page with ${MUX_TOOL_NAMES.fetchArtifact}]`,
                 };
             }
             remaining -= serialized.length;
@@ -773,7 +966,7 @@ export class Gateway {
         if (truncated) {
             compactContent.unshift({
                 type: "text",
-                text: `mcp-gateway compacted the backend response to stay under ${maxOutputChars} chars. Narrow the request or call a more specific backend tool for full detail.`,
+                text: `mcp-gateway compacted the backend response to stay under ${maxOutputChars} chars. Narrow the request, use ${MUX_TOOL_NAMES.describeTool} before calling schema-heavy tools, or fetch a referenced artifact page explicitly.`,
             });
         }
         return {

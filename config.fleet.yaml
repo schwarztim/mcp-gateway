@@ -10,6 +10,8 @@ gateway:
   log_level: "info"
   tool_prefix: ""
   tool_exposure: "mux"
+  streamable_http_stateless: true
+  streamable_http_json_response: true
 
 fleet:
   enabled: true

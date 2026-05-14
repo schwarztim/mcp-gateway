@@ -11,6 +11,7 @@ export declare class Gateway {
     private streamableTransports;
     private sessions;
     private streamableSessionLastSeen;
+    private artifacts;
     private healthTimer?;
     private httpServer?;
     private configWatcher?;
@@ -21,6 +22,8 @@ export declare class Gateway {
     private setupMcpHandlers;
     private setupHttpRoutes;
     private headerValue;
+    private handleStatelessStreamableRequest;
+    private isFacadeMode;
     private getExposedTools;
     private jsonToolResult;
     private handleMuxTool;
@@ -29,8 +32,11 @@ export declare class Gateway {
     private getCharLimit;
     private truncateText;
     private compactJsonText;
+    private storeArtifact;
+    private fetchArtifact;
     private compactFleetEntry;
     private searchRegisteredTools;
+    private describeRegisteredTool;
     private getBackendStatus;
     private callBackendTool;
     private compactBackendToolResult;

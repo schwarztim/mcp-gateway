@@ -259,6 +259,10 @@ declare const GatewayConfigSchema: z.ZodObject<{
     log_level: z.ZodDefault<z.ZodEnum<["debug", "info", "warn", "error"]>>;
     tool_prefix: z.ZodDefault<z.ZodString>;
     tool_exposure: z.ZodDefault<z.ZodEnum<["namespaced", "mux", "both"]>>;
+    /** Stateless Streamable HTTP prevents stale in-memory session IDs after gateway restarts */
+    streamable_http_stateless: z.ZodDefault<z.ZodBoolean>;
+    /** JSON responses keep facade calls request/response and avoid long-lived per-call SSE streams */
+    streamable_http_json_response: z.ZodDefault<z.ZodBoolean>;
 }, "strip", z.ZodTypeAny, {
     port: number;
     host: string;
@@ -266,6 +270,8 @@ declare const GatewayConfigSchema: z.ZodObject<{
     log_level: "debug" | "info" | "warn" | "error";
     tool_prefix: string;
     tool_exposure: "namespaced" | "mux" | "both";
+    streamable_http_stateless: boolean;
+    streamable_http_json_response: boolean;
 }, {
     port?: number | undefined;
     host?: string | undefined;
@@ -273,6 +279,8 @@ declare const GatewayConfigSchema: z.ZodObject<{
     log_level?: "debug" | "info" | "warn" | "error" | undefined;
     tool_prefix?: string | undefined;
     tool_exposure?: "namespaced" | "mux" | "both" | undefined;
+    streamable_http_stateless?: boolean | undefined;
+    streamable_http_json_response?: boolean | undefined;
 }>;
 declare const ToolHiveFleetConfigSchema: z.ZodObject<{
     app_support_dir: z.ZodOptional<z.ZodString>;
@@ -411,6 +419,10 @@ declare const ConfigFileSchema: z.ZodObject<{
         log_level: z.ZodDefault<z.ZodEnum<["debug", "info", "warn", "error"]>>;
         tool_prefix: z.ZodDefault<z.ZodString>;
         tool_exposure: z.ZodDefault<z.ZodEnum<["namespaced", "mux", "both"]>>;
+        /** Stateless Streamable HTTP prevents stale in-memory session IDs after gateway restarts */
+        streamable_http_stateless: z.ZodDefault<z.ZodBoolean>;
+        /** JSON responses keep facade calls request/response and avoid long-lived per-call SSE streams */
+        streamable_http_json_response: z.ZodDefault<z.ZodBoolean>;
     }, "strip", z.ZodTypeAny, {
         port: number;
         host: string;
@@ -418,6 +430,8 @@ declare const ConfigFileSchema: z.ZodObject<{
         log_level: "debug" | "info" | "warn" | "error";
         tool_prefix: string;
         tool_exposure: "namespaced" | "mux" | "both";
+        streamable_http_stateless: boolean;
+        streamable_http_json_response: boolean;
     }, {
         port?: number | undefined;
         host?: string | undefined;
@@ -425,6 +439,8 @@ declare const ConfigFileSchema: z.ZodObject<{
         log_level?: "debug" | "info" | "warn" | "error" | undefined;
         tool_prefix?: string | undefined;
         tool_exposure?: "namespaced" | "mux" | "both" | undefined;
+        streamable_http_stateless?: boolean | undefined;
+        streamable_http_json_response?: boolean | undefined;
     }>>;
     fleet: z.ZodDefault<z.ZodObject<{
         enabled: z.ZodDefault<z.ZodBoolean>;
@@ -641,6 +657,8 @@ declare const ConfigFileSchema: z.ZodObject<{
         log_level: "debug" | "info" | "warn" | "error";
         tool_prefix: string;
         tool_exposure: "namespaced" | "mux" | "both";
+        streamable_http_stateless: boolean;
+        streamable_http_json_response: boolean;
     };
     fleet: {
         enabled: boolean;
@@ -708,6 +726,8 @@ declare const ConfigFileSchema: z.ZodObject<{
         log_level?: "debug" | "info" | "warn" | "error" | undefined;
         tool_prefix?: string | undefined;
         tool_exposure?: "namespaced" | "mux" | "both" | undefined;
+        streamable_http_stateless?: boolean | undefined;
+        streamable_http_json_response?: boolean | undefined;
     } | undefined;
     fleet?: {
         enabled?: boolean | undefined;
