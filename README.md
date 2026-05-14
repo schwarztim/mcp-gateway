@@ -7,7 +7,7 @@ The main goal is context control: clients can list only a few gateway tools, sea
 ## What it provides
 
 - **One client endpoint**: `http://127.0.0.1:3100/mcp` for Streamable HTTP clients, plus legacy `/sse` support.
-- **Compact mux mode**: expose only gateway tools instead of every backend tool schema.
+- **Facade mux mode**: expose only gateway tools instead of every backend tool schema, resource list, or prompt list.
 - **Dynamic backend ingestion**: read the MCPU-generated ToolHive config and connect reachable HTTP MCP backends automatically.
 - **Read-only fleet inventory**: inspect ToolHive runconfigs, status files, generated MCPU exposure, optional Docker state, and endpoint health.
 - **Stable reload behavior**: reload config or fleet entries without dropping the whole gateway.
@@ -20,8 +20,10 @@ When `gateway.tool_exposure` is set to `mux`, clients see only:
 
 | Tool | Purpose |
 |---|---|
-| `gateway_search_tools` | Search connected backend tools without exposing every backend schema in `tools/list`. |
+| `gateway_search_tools` | Search connected backend tools without exposing every backend schema in `tools/list`; empty inventory dumps are refused. |
+| `gateway_describe_tool` | Lazily describe one selected backend tool schema. |
 | `gateway_call_tool` | Call a namespaced backend tool returned by search. |
+| `gateway_fetch_artifact` | Fetch a capped page from an oversized result artifact. |
 | `gateway_backend_status` | Show backend connection state and tool counts. |
 | `gateway_fleet_inventory` | Inspect the read-only ToolHive fleet catalog. |
 | `gateway_mcpu_config` | Generate a read-only MCPU-compatible fleet config report. |
@@ -44,6 +46,8 @@ gateway:
   host: "127.0.0.1"
   name: "mcp-gateway"
   tool_exposure: "mux"
+  streamable_http_stateless: true
+  streamable_http_json_response: true
 
 fleet:
   enabled: true
@@ -67,6 +71,8 @@ backends: {}
 | `mux` | Expose only the compact gateway tools. Recommended for large fleets. |
 | `namespaced` | Expose all backend tools directly with namespace prefixes. |
 | `both` | Expose gateway tools and all backend tools. |
+
+In `mux` mode, backend resources and prompts are also hidden from client list calls. Large responses are capped by default, stored as in-memory artifacts, and can be paged explicitly with `gateway_fetch_artifact`. Streamable HTTP is stateless by default so stale client session IDs after a gateway restart do not keep producing `Session not found`.
 
 Static backends can still be configured under `backends` using `stdio`, `sse`, or `http` transports.
 
@@ -109,7 +115,7 @@ The harness verifies:
 
 - 500 simulated fleet entries remain represented.
 - Degraded entries stay discoverable with reasons.
-- The client-facing mux surface remains 5 tools.
+- The client-facing mux surface remains fewer than 10 facade tools.
 - Changed backend ports are resolved from the latest fleet state.
 
 ## Repository READMEs

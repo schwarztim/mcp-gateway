@@ -2,7 +2,9 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 export const MUX_TOOL_NAMES = {
   searchTools: "gateway_search_tools",
+  describeTool: "gateway_describe_tool",
   callTool: "gateway_call_tool",
+  fetchArtifact: "gateway_fetch_artifact",
   backendStatus: "gateway_backend_status",
   fleetInventory: "gateway_fleet_inventory",
   mcpuConfig: "gateway_mcpu_config",
@@ -42,19 +44,30 @@ export function getMuxTools(): Tool[] {
   return [
     {
       name: MUX_TOOL_NAMES.searchTools,
-      description: "Search the gateway's connected backend tools without exposing every backend tool schema in tools/list.",
+      description: "Search connected backend tools without exposing every backend tool schema in tools/list. Requires query or backend filter.",
       inputSchema: {
         type: "object",
         properties: {
           query: { type: "string", description: "Case-insensitive search text for tool name, description, or backend." },
           backend: { type: "string", description: "Optional backend name filter." },
-          limit: { type: "number", description: "Maximum matches to return.", default: 25 },
+          limit: { type: "number", description: "Maximum matches to return.", default: 10 },
         },
       },
     },
     {
+      name: MUX_TOOL_NAMES.describeTool,
+      description: "Describe one namespaced backend tool returned by gateway_search_tools. Full schema is capped and referenced if oversized.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          tool: { type: "string", description: "Namespaced tool name to describe." },
+        },
+        required: ["tool"],
+      },
+    },
+    {
       name: MUX_TOOL_NAMES.callTool,
-      description: "Call a namespaced backend tool returned by gateway_search_tools. Large responses are compacted by the gateway.",
+      description: "Call one namespaced backend tool returned by gateway_search_tools. Large responses are compacted with artifact refs.",
       inputSchema: {
         type: "object",
         properties: {
@@ -62,20 +75,34 @@ export function getMuxTools(): Tool[] {
           arguments: { type: "object", description: "Arguments to pass to the backend tool.", additionalProperties: true },
           maxOutputChars: {
             type: "number",
-            description: "Optional response text budget. Defaults to the gateway safe cap.",
+            description: "Optional response text budget. Defaults to the gateway facade cap and is bounded by a hard max.",
           },
         },
         required: ["tool"],
       },
     },
     {
+      name: MUX_TOOL_NAMES.fetchArtifact,
+      description: "Fetch a capped page from an oversized response artifact previously returned by the gateway.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          artifactId: { type: "string", description: "Artifact ID returned by another gateway tool." },
+          offset: { type: "number", description: "Character offset to start reading from.", default: 0 },
+          maxChars: { type: "number", description: "Maximum characters to return.", default: 8000 },
+        },
+        required: ["artifactId"],
+      },
+    },
+    {
       name: MUX_TOOL_NAMES.backendStatus,
-      description: "Return gateway backend connection status and registered tool counts.",
+      description: "Return compact gateway backend health counts. Backend lists are returned only with a filter or includeBackends=true.",
       inputSchema: {
         type: "object",
         properties: {
           backend: { type: "string", description: "Optional backend name filter." },
-          limit: { type: "number", description: "Maximum backends to return.", default: 25 },
+          limit: { type: "number", description: "Maximum backends to return when listing.", default: 10 },
+          includeBackends: { type: "boolean", description: "Include a capped backend list. Defaults to false unless backend is set.", default: false },
           includeErrors: { type: "boolean", description: "Include truncated backend error text.", default: false },
           includeDescriptions: { type: "boolean", description: "Include truncated backend descriptions.", default: false },
         },
@@ -89,7 +116,7 @@ export function getMuxTools(): Tool[] {
         properties: {
           summaryOnly: { type: "boolean", description: "Return only summary counts and source paths. Defaults to true.", default: true },
           includeEntries: { type: "boolean", description: "Return a capped compact entry list. Full raw inventory is available only through the local admin API.", default: false },
-          limit: { type: "number", description: "Maximum compact fleet entries to return.", default: 25 },
+          limit: { type: "number", description: "Maximum compact fleet entries to return.", default: 10 },
           probe: { type: "boolean", description: "Run TCP endpoint checks while building the inventory.", default: false },
         },
       },
@@ -103,7 +130,7 @@ export function getMuxTools(): Tool[] {
           probe: { type: "boolean", description: "Run TCP endpoint checks while building the source inventory.", default: false },
           configOnly: { type: "boolean", description: "Return a capped compact mcpServers-compatible config preview.", default: false },
           includeEntries: { type: "boolean", description: "Include a capped compact source-entry preview.", default: false },
-          limit: { type: "number", description: "Maximum config/entry previews to return.", default: 25 },
+          limit: { type: "number", description: "Maximum config/entry previews to return.", default: 10 },
         },
       },
     },

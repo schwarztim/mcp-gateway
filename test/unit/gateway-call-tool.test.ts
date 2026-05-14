@@ -25,6 +25,30 @@ describe("gateway_call_tool schema", () => {
   });
 });
 
+describe("gateway facade tools", () => {
+  it("keeps the client-visible mux surface compact", () => {
+    expect(getMuxTools().map((t) => t.name)).toEqual([
+      MUX_TOOL_NAMES.searchTools,
+      MUX_TOOL_NAMES.describeTool,
+      MUX_TOOL_NAMES.callTool,
+      MUX_TOOL_NAMES.fetchArtifact,
+      MUX_TOOL_NAMES.backendStatus,
+      MUX_TOOL_NAMES.fleetInventory,
+      MUX_TOOL_NAMES.mcpuConfig,
+    ]);
+    expect(getMuxTools()).toHaveLength(7);
+  });
+
+  it("defaults search and status list limits to facade-safe values", () => {
+    const searchDef = getMuxTools().find((t) => t.name === MUX_TOOL_NAMES.searchTools)!;
+    const statusDef = getMuxTools().find((t) => t.name === MUX_TOOL_NAMES.backendStatus)!;
+    const searchLimit = (searchDef.inputSchema.properties as Record<string, any>).limit;
+    const statusLimit = (statusDef.inputSchema.properties as Record<string, any>).limit;
+    expect(searchLimit.default).toBe(10);
+    expect(statusLimit.default).toBe(10);
+  });
+});
+
 // ─── Argument forwarding ───────────────────────────────────────────────────────
 
 describe("extractCallToolArgs — argument forwarding to backend", () => {
