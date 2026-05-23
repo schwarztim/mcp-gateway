@@ -12,6 +12,7 @@ export declare class Gateway {
     private sessions;
     private streamableSessionLastSeen;
     private artifacts;
+    private reconnectInflight;
     private healthTimer?;
     private httpServer?;
     private configWatcher?;
@@ -39,6 +40,9 @@ export declare class Gateway {
     private describeRegisteredTool;
     private getBackendStatus;
     private callBackendTool;
+    private isStaleSessionError;
+    private ensureReconnected;
+    private reconnectBackend;
     private compactBackendToolResult;
     private touchStreamableSession;
     private dropStreamableSession;

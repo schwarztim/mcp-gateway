@@ -56,6 +56,10 @@ export class Gateway {
   private sessions = new Map<string, McpServer>();
   private streamableSessionLastSeen = new Map<string, number>();
   private artifacts = new Map<string, GatewayArtifact>();
+  // Deduplicates concurrent reconnects of the same backend so N parallel
+  // stale-session errors trigger one reconnect, not N. Keyed by backend name;
+  // entry is the in-flight reconnect promise, deleted in its finally block.
+  private reconnectInflight = new Map<string, Promise<number>>();
 
   private healthTimer?: ReturnType<typeof setInterval>;
   private httpServer?: HttpServer;
@@ -368,17 +372,11 @@ export class Gateway {
         }
 
         try {
-          await backend.restart();
-          this.toolRegistry.registerBackend(
-            backendName,
-            backend.config.namespace,
-            backend.tools
-          );
-          this.notifyToolsChanged();
+          const toolCount = await this.ensureReconnected(backendName);
           res.json({
             status: "ok",
             message: `Backend "${backendName}" reloaded`,
-            toolCount: backend.tools.length,
+            toolCount,
           });
         } catch (err) {
           res.status(500).json({
@@ -689,6 +687,34 @@ export class Gateway {
             : {}),
         };
         return this.jsonToolResult(compact, DEFAULT_MUX_RESPONSE_CHAR_LIMIT);
+      }
+      case MUX_TOOL_NAMES.reconnectBackend: {
+        const backendName = typeof args.backend === "string" ? args.backend : "";
+        if (!backendName) {
+          return {
+            content: [{ type: "text" as const, text: "gateway_reconnect_backend requires a string 'backend' argument." }],
+            isError: true,
+          };
+        }
+        if (!this.backends.has(backendName)) {
+          return {
+            content: [{ type: "text" as const, text: `Backend "${backendName}" not found. Use gateway_backend_status to list connected backends.` }],
+            isError: true,
+          };
+        }
+        try {
+          const toolCount = await this.ensureReconnected(backendName);
+          return this.jsonToolResult({
+            backend: backendName,
+            status: "reconnected",
+            toolCount,
+          }, DEFAULT_MUX_RESPONSE_CHAR_LIMIT);
+        } catch (err) {
+          return {
+            content: [{ type: "text" as const, text: `Failed to reconnect backend "${backendName}": ${err instanceof Error ? err.message : String(err)}` }],
+            isError: true,
+          };
+        }
       }
       case MUX_TOOL_NAMES.mcpuConfig: {
         if (!this.config.fleet.enabled) {
@@ -1056,6 +1082,21 @@ export class Gateway {
       const result = await backend.callTool(entry.originalName, args);
       return this.compactBackendToolResult(result, maxOutputChars);
     } catch (err) {
+      if (this.isStaleSessionError(err)) {
+        this.logger.warn(
+          `Backend "${entry.backendName}" returned stale-session error on ${entry.originalName}, auto-reconnecting and retrying once...`
+        );
+        try {
+          await this.ensureReconnected(entry.backendName);
+          const result = await backend.callTool(entry.originalName, args);
+          return this.compactBackendToolResult(result, maxOutputChars);
+        } catch (retryErr) {
+          this.logger.error(
+            `Backend "${entry.backendName}" retry after auto-reconnect failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`
+          );
+          // Fall through to surface the original error (per spec: retry is best-effort).
+        }
+      }
       return {
         content: [
           {
@@ -1066,6 +1107,56 @@ export class Gateway {
         isError: true,
       };
     }
+  }
+
+  // Detect transport-layer stale-session errors that a reconnect can heal.
+  // Matches JSON-RPC -32001 (the streamable-http "Session not found" code that
+  // surfaces after a backend container is bounced) and the textual variant.
+  // Does NOT match -32000 (generic server error) or other application-level
+  // failures — those should reach the caller unmodified.
+  private isStaleSessionError(err: unknown): boolean {
+    if (!err || typeof err !== "object") return false;
+    const code = (err as { code?: unknown }).code;
+    if (code === -32001) return true;
+    const message = (err as { message?: unknown }).message;
+    if (typeof message === "string" && /session not found/i.test(message)) return true;
+    return false;
+  }
+
+  // Dedup wrapper around reconnectBackend: if a reconnect for this backend is
+  // already in flight, await it instead of starting a new one. Prevents
+  // thundering-herd reconnects when N concurrent calls all hit -32001 from the
+  // same dead session. Returns the registered tool count after reconnect.
+  private async ensureReconnected(backendName: string): Promise<number> {
+    const existing = this.reconnectInflight.get(backendName);
+    if (existing) return existing;
+    const inflight = (async () => {
+      try {
+        return await this.reconnectBackend(backendName);
+      } finally {
+        this.reconnectInflight.delete(backendName);
+      }
+    })();
+    this.reconnectInflight.set(backendName, inflight);
+    return inflight;
+  }
+
+  // Restart one backend (drop transport session, reinitialize), re-register
+  // its tools, and notify clients. Throws if the backend is unknown or the
+  // restart fails — callers handle surfacing.
+  private async reconnectBackend(backendName: string): Promise<number> {
+    const backend = this.backends.get(backendName);
+    if (!backend) {
+      throw new Error(`Backend "${backendName}" not found`);
+    }
+    await backend.restart();
+    this.toolRegistry.registerBackend(
+      backendName,
+      backend.config.namespace,
+      backend.tools
+    );
+    this.notifyToolsChanged();
+    return backend.tools.length;
   }
 
   private compactBackendToolResult(result: unknown, maxOutputChars: number): { content: any[]; isError?: boolean } {

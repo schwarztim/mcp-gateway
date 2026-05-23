@@ -7,6 +7,7 @@ export declare const MUX_TOOL_NAMES: {
     readonly backendStatus: "gateway_backend_status";
     readonly fleetInventory: "gateway_fleet_inventory";
     readonly mcpuConfig: "gateway_mcpu_config";
+    readonly reconnectBackend: "gateway_reconnect_backend";
 };
 export type MuxToolName = (typeof MUX_TOOL_NAMES)[keyof typeof MUX_TOOL_NAMES];
 export declare function isMuxToolName(name: string): name is MuxToolName;

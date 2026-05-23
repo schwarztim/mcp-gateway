@@ -35,8 +35,11 @@ describe("gateway facade tools", () => {
       MUX_TOOL_NAMES.backendStatus,
       MUX_TOOL_NAMES.fleetInventory,
       MUX_TOOL_NAMES.mcpuConfig,
+      MUX_TOOL_NAMES.reconnectBackend,
     ]);
-    expect(getMuxTools()).toHaveLength(7);
+    expect(getMuxTools()).toHaveLength(8);
+    // Resilience harness asserts <10 mux tools — guard the budget.
+    expect(getMuxTools().length).toBeLessThan(10);
   });
 
   it("defaults search and status list limits to facade-safe values", () => {

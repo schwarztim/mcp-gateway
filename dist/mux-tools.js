@@ -6,6 +6,7 @@ export const MUX_TOOL_NAMES = {
     backendStatus: "gateway_backend_status",
     fleetInventory: "gateway_fleet_inventory",
     mcpuConfig: "gateway_mcpu_config",
+    reconnectBackend: "gateway_reconnect_backend",
 };
 export function isMuxToolName(name) {
     return Object.values(MUX_TOOL_NAMES).includes(name);
@@ -121,6 +122,17 @@ export function getMuxTools() {
                     includeEntries: { type: "boolean", description: "Include a capped compact source-entry preview.", default: false },
                     limit: { type: "number", description: "Maximum config/entry previews to return.", default: 10 },
                 },
+            },
+        },
+        {
+            name: MUX_TOOL_NAMES.reconnectBackend,
+            description: "Force a fresh transport session to one backend without bouncing the whole gateway. Use after a backend container restart (cookie reauth, image upgrade) when the gateway is still holding a stale session and tool calls return -32001 'Session not found'. Other backends are untouched.",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    backend: { type: "string", description: "Backend name to reconnect (e.g. 'servicenow')." },
+                },
+                required: ["backend"],
             },
         },
     ];
