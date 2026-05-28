@@ -33,12 +33,18 @@ fleet:
       - ms365
 
 backends:
-  # Copilot Studio runs as a local stdio server, not in THV
+  # Copilot Studio — DISABLED: this gateway supports streamable-http transports
+  # ONLY. stdio backends deadlock under gateway management — the MCP async loop
+  # and the parent's stdio-pipe handshake hang, the backend exposes zero tools,
+  # and clients waste tokens retrying a path that can never succeed. A single
+  # stdio backend has cascaded into a fleet outage (crash-respawn thrash →
+  # EADDRINUSE on :3100 → the gateway itself crash-loops). Re-enable ONLY after
+  # re-fronting this server behind streamable-http and switching to a `url:`.
   copilot-studio:
     transport: stdio
     command: "node"
     args: ["/home/user/Scripts/mcp-servers/copilot-studio-mcp/dist/index.js"]
     namespace: "copilot-studio"
-    enabled: true
+    enabled: false
     restart_policy: "on-failure"
     max_restarts: 3
