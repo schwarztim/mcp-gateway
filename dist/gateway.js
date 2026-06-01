@@ -970,18 +970,31 @@ export class Gateway {
         }
     }
     // Detect transport-layer stale-session errors that a reconnect can heal.
-    // Matches JSON-RPC -32001 (the streamable-http "Session not found" code that
-    // surfaces after a backend container is bounced) and the textual variant.
-    // Does NOT match -32000 (generic server error) or other application-level
-    // failures — those should reach the caller unmodified.
+    // Two shapes surface after a streamable-http backend is bounced and the
+    // gateway's cached mcp-session-id is invalidated:
+    //   1. JSON-RPC -32001 "Session not found" (transport-level code) — fast-path.
+    //   2. JSON-RPC -32000 "Bad Request: No valid session ID provided" — the
+    //      backend rejects the next forwarded call with a generic server-error
+    //      code but a stale-session message.
+    // The matcher is MESSAGE-GATED for the -32000 case: -32000 is the generic
+    // "server error" code, so matching it alone would misclassify unrelated
+    // application failures as stale sessions. We only treat it as stale when the
+    // message names a missing/invalid session. The textual regex covers both the
+    // "session not found" and "no valid session" variants and is robust to where
+    // the SDK puts the text — McpError stringifies as
+    // "MCP error <code>: <message>", so err.message carries the original text.
     isStaleSessionError(err) {
         if (!err || typeof err !== "object")
             return false;
         const code = err.code;
+        // Fast-path: transport-level "Session not found" code.
         if (code === -32001)
             return true;
         const message = err.message;
-        if (typeof message === "string" && /session not found/i.test(message))
+        // Message-gated: covers -32000 "No valid session ID" and the textual
+        // "Session not found" variant regardless of code, but never matches a bare
+        // -32000 whose message is unrelated (e.g. "internal error").
+        if (typeof message === "string" && /(session not found|no valid session)/i.test(message))
             return true;
         return false;
     }
