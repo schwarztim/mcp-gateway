@@ -411,6 +411,35 @@ declare const FleetConfigSchema: z.ZodObject<{
         ingest_skip?: string[] | undefined;
     } | undefined;
 }>;
+declare const SafetyConfigSchema: z.ZodObject<{
+    enforce: z.ZodDefault<z.ZodEnum<["advisory", "blocking"]>>;
+    manifest_dir: z.ZodOptional<z.ZodString>;
+}, "strip", z.ZodTypeAny, {
+    enforce: "advisory" | "blocking";
+    manifest_dir?: string | undefined;
+}, {
+    enforce?: "advisory" | "blocking" | undefined;
+    manifest_dir?: string | undefined;
+}>;
+declare const CompressionConfigSchema: z.ZodObject<{
+    /** Master switch — defaults OFF so behavior is byte-identical to pre-Phase-4. */
+    enabled: z.ZodDefault<z.ZodBoolean>;
+    /** Only compress text payloads at least this large (chars); smaller text passes through unchanged. */
+    min_chars: z.ZodDefault<z.ZodNumber>;
+    /**
+     * advisory — measure savings and log them, but return the ORIGINAL text unchanged.
+     * active   — apply compression and return the compacted text with a marker.
+     */
+    mode: z.ZodDefault<z.ZodEnum<["advisory", "active"]>>;
+}, "strip", z.ZodTypeAny, {
+    enabled: boolean;
+    min_chars: number;
+    mode: "advisory" | "active";
+}, {
+    enabled?: boolean | undefined;
+    min_chars?: number | undefined;
+    mode?: "advisory" | "active" | undefined;
+}>;
 declare const ConfigFileSchema: z.ZodObject<{
     gateway: z.ZodDefault<z.ZodObject<{
         port: z.ZodDefault<z.ZodNumber>;
@@ -649,6 +678,35 @@ declare const ConfigFileSchema: z.ZodObject<{
         reconnect_interval?: number | undefined;
         headers?: Record<string, string> | undefined;
     }>]>>>;
+    safety: z.ZodDefault<z.ZodObject<{
+        enforce: z.ZodDefault<z.ZodEnum<["advisory", "blocking"]>>;
+        manifest_dir: z.ZodOptional<z.ZodString>;
+    }, "strip", z.ZodTypeAny, {
+        enforce: "advisory" | "blocking";
+        manifest_dir?: string | undefined;
+    }, {
+        enforce?: "advisory" | "blocking" | undefined;
+        manifest_dir?: string | undefined;
+    }>>;
+    compression: z.ZodDefault<z.ZodObject<{
+        /** Master switch — defaults OFF so behavior is byte-identical to pre-Phase-4. */
+        enabled: z.ZodDefault<z.ZodBoolean>;
+        /** Only compress text payloads at least this large (chars); smaller text passes through unchanged. */
+        min_chars: z.ZodDefault<z.ZodNumber>;
+        /**
+         * advisory — measure savings and log them, but return the ORIGINAL text unchanged.
+         * active   — apply compression and return the compacted text with a marker.
+         */
+        mode: z.ZodDefault<z.ZodEnum<["advisory", "active"]>>;
+    }, "strip", z.ZodTypeAny, {
+        enabled: boolean;
+        min_chars: number;
+        mode: "advisory" | "active";
+    }, {
+        enabled?: boolean | undefined;
+        min_chars?: number | undefined;
+        mode?: "advisory" | "active" | undefined;
+    }>>;
 }, "strip", z.ZodTypeAny, {
     gateway: {
         port: number;
@@ -718,6 +776,15 @@ declare const ConfigFileSchema: z.ZodObject<{
         source?: string | undefined;
         description?: string | undefined;
     }>;
+    safety: {
+        enforce: "advisory" | "blocking";
+        manifest_dir?: string | undefined;
+    };
+    compression: {
+        enabled: boolean;
+        min_chars: number;
+        mode: "advisory" | "active";
+    };
 }, {
     gateway?: {
         port?: number | undefined;
@@ -787,6 +854,15 @@ declare const ConfigFileSchema: z.ZodObject<{
         reconnect_interval?: number | undefined;
         headers?: Record<string, string> | undefined;
     }> | undefined;
+    safety?: {
+        enforce?: "advisory" | "blocking" | undefined;
+        manifest_dir?: string | undefined;
+    } | undefined;
+    compression?: {
+        enabled?: boolean | undefined;
+        min_chars?: number | undefined;
+        mode?: "advisory" | "active" | undefined;
+    } | undefined;
 }>;
 export type StdioBackendConfig = z.infer<typeof StdioBackendSchema>;
 export type SseBackendConfig = z.infer<typeof SseBackendSchema>;
@@ -795,6 +871,8 @@ export type BackendConfig = z.infer<typeof BackendSchema>;
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema>;
 export type ToolHiveFleetConfig = z.infer<typeof ToolHiveFleetConfigSchema>;
 export type FleetConfig = z.infer<typeof FleetConfigSchema>;
+export type SafetyConfig = z.infer<typeof SafetyConfigSchema>;
+export type CompressionConfig = z.infer<typeof CompressionConfigSchema>;
 export type Config = z.infer<typeof ConfigFileSchema>;
 export declare function loadConfig(filePath: string): Promise<Config>;
 export {};

@@ -98,10 +98,27 @@ const FleetConfigSchema = z.object({
     enabled: z.boolean().default(true),
     toolhive: ToolHiveFleetConfigSchema.default({}),
 });
+const SafetyConfigSchema = z.object({
+    enforce: z.enum(["advisory", "blocking"]).default("advisory"),
+    manifest_dir: z.string().optional(),
+});
+const CompressionConfigSchema = z.object({
+    /** Master switch — defaults OFF so behavior is byte-identical to pre-Phase-4. */
+    enabled: z.boolean().default(false),
+    /** Only compress text payloads at least this large (chars); smaller text passes through unchanged. */
+    min_chars: z.number().int().positive().default(20_000),
+    /**
+     * advisory — measure savings and log them, but return the ORIGINAL text unchanged.
+     * active   — apply compression and return the compacted text with a marker.
+     */
+    mode: z.enum(["advisory", "active"]).default("active"),
+});
 const ConfigFileSchema = z.object({
     gateway: GatewayConfigSchema.default({}),
     fleet: FleetConfigSchema.default({}),
     backends: z.record(BackendSchema).default({}),
+    safety: SafetyConfigSchema.default({}),
+    compression: CompressionConfigSchema.default({}),
 });
 /** Resolve ${VAR} references in a string from process.env */
 function resolveEnvVars(value) {

@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { ListToolsRequestSchema, CallToolRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema, isInitializeRequest, } from "@modelcontextprotocol/sdk/types.js";
 import express from "express";
 import { ToolRegistry } from "./tool-registry.js";
+import { ManifestRegistry, decideGate } from "./manifest.js";
 import { BackendInstance } from "./backend.js";
 import { watch } from "chokidar";
 import { loadConfig } from "./config.js";
@@ -12,6 +13,124 @@ import { buildToolHiveFleetInventory } from "./fleet-inventory.js";
 import { buildFleetMcpuConfig } from "./fleet-mcpu-config.js";
 import { loadFleetBackendsFromMcpuConfig } from "./fleet-backend-ingestion.js";
 import { getMuxTools, isMuxToolName, MUX_TOOL_NAMES, extractCallToolArgs } from "./mux-tools.js";
+/** Minimum array length to attempt columnar encoding (not worth it below this). */
+const COLUMNAR_MIN_ROWS = 8;
+/**
+ * Return true if every element of arr is a non-null plain object and all
+ * objects share exactly the same set of own-enumerable keys.
+ */
+export function isHomogeneousObjectArray(arr) {
+    if (arr.length < COLUMNAR_MIN_ROWS)
+        return false;
+    const first = arr[0];
+    if (!first || typeof first !== "object" || Array.isArray(first))
+        return false;
+    const keys = Object.keys(first).sort();
+    if (keys.length === 0)
+        return false;
+    const keySet = keys.join("\0");
+    for (let i = 1; i < arr.length; i++) {
+        const el = arr[i];
+        if (!el || typeof el !== "object" || Array.isArray(el))
+            return false;
+        if (Object.keys(el).sort().join("\0") !== keySet)
+            return false;
+    }
+    return true;
+}
+/**
+ * Encode a homogeneous object-array into a cols/v1 envelope.
+ * Caller MUST verify isHomogeneousObjectArray before calling.
+ */
+export function encodeColumnar(arr) {
+    const keys = Object.keys(arr[0]).sort();
+    const rows = arr.map((obj) => keys.map((k) => obj[k]));
+    return { __gw_compact__: "cols/v1", keys, rows };
+}
+/**
+ * Decode a cols/v1 envelope back to a plain object-array.
+ * Used in tests to verify lossless round-trip.
+ */
+export function decodeColumnar(env) {
+    return env.rows.map((row) => {
+        const obj = {};
+        for (let i = 0; i < env.keys.length; i++) {
+            obj[env.keys[i]] = row[i];
+        }
+        return obj;
+    });
+}
+/**
+ * Recursively prune null / undefined / empty-string / empty-array /
+ * empty-object fields from a value.  These are low-information tokens that
+ * inflate serialised size without adding meaning.
+ *
+ * Arrays of primitives are pruned only of null/undefined elements.
+ * Objects lose keys whose pruned value is null/undefined/""/{}/[].
+ */
+export function pruneEmpty(value) {
+    if (value === null || value === undefined || value === "")
+        return undefined;
+    if (Array.isArray(value)) {
+        const pruned = value
+            .map(pruneEmpty)
+            .filter((v) => v !== undefined);
+        return pruned.length === 0 ? undefined : pruned;
+    }
+    if (typeof value === "object") {
+        const result = {};
+        for (const [k, v] of Object.entries(value)) {
+            const pv = pruneEmpty(v);
+            if (pv !== undefined)
+                result[k] = pv;
+        }
+        return Object.keys(result).length === 0 ? undefined : result;
+    }
+    return value;
+}
+/**
+ * Recursively apply columnar encoding to any homogeneous object-array found
+ * in the value tree.  Leaves non-homogeneous arrays and scalars unchanged.
+ */
+export function applyColumnarEncoding(value) {
+    if (Array.isArray(value)) {
+        if (isHomogeneousObjectArray(value)) {
+            return encodeColumnar(value);
+        }
+        return value.map(applyColumnarEncoding);
+    }
+    if (value && typeof value === "object" && !value.__gw_compact__) {
+        const result = {};
+        for (const [k, v] of Object.entries(value)) {
+            result[k] = applyColumnarEncoding(v);
+        }
+        return result;
+    }
+    return value;
+}
+/**
+ * Apply the full compression pipeline to a JSON-parseable text string:
+ *   1. Prune null/empty fields
+ *   2. Columnar-encode homogeneous object-arrays
+ *   3. Minify (JSON.stringify without indentation)
+ *
+ * Returns the compressed string, or the original if the pipeline produces no
+ * meaningful reduction (savedPct ≤ 0).
+ *
+ * Throws if `text` is not valid JSON — callers must guard.
+ */
+export function applyJsonCompression(text) {
+    const parsed = JSON.parse(text);
+    const pruned = pruneEmpty(parsed) ?? parsed; // if pruneEmpty returns undefined (e.g. empty root), keep original
+    const columnar = applyColumnarEncoding(pruned);
+    const compressed = JSON.stringify(columnar);
+    const savedPct = Math.round(100 * (1 - compressed.length / text.length));
+    if (savedPct <= 0) {
+        return { compressed: text, savedPct: 0 };
+    }
+    return { compressed, savedPct };
+}
+// ── End Phase 4 compression helpers ────────────────────────────────────────────
 const DEFAULT_MUX_RESPONSE_CHAR_LIMIT = 6_000;
 const STATUS_RESPONSE_CHAR_LIMIT = 4_000;
 const DESCRIBE_RESPONSE_CHAR_LIMIT = 12_000;
@@ -26,6 +145,7 @@ export class Gateway {
     configPath;
     logger;
     app = express();
+    manifests;
     toolRegistry;
     backends = new Map();
     sseTransports = new Map();
@@ -46,7 +166,8 @@ export class Gateway {
         this.config = config;
         this.configPath = configPath;
         this.logger = logger;
-        this.toolRegistry = new ToolRegistry(logger, config.gateway.tool_prefix);
+        this.manifests = new ManifestRegistry(logger, config.safety?.manifest_dir);
+        this.toolRegistry = new ToolRegistry(logger, config.gateway.tool_prefix, this.manifests.classify.bind(this.manifests));
         this.setupHttpRoutes();
     }
     createSessionServer() {
@@ -551,7 +672,55 @@ export class Gateway {
                         isError: true,
                     };
                 }
-                return this.callBackendTool(target, targetArgs, this.getCharLimit(args, "maxOutputChars"));
+                // ── Safety confirmation gate ──────────────────────────────────────────
+                const entry = this.toolRegistry.resolve(target);
+                const confirmed = args.confirmed === true;
+                const safety = entry?.safety;
+                const decision = decideGate(safety, confirmed, this.config.safety.enforce);
+                if (decision.action === "warn") {
+                    this.logger.warn({
+                        event: "safety.would_block",
+                        tool: target,
+                        safetyClass: decision.safetyClass,
+                        source: decision.source,
+                        msg: "advisory: unconfirmed write-class tool call — would block in blocking mode",
+                    });
+                    // Advisory mode: fall through and dispatch as normal (zero behavior change).
+                }
+                else if (decision.action === "block") {
+                    // Redact argument values: keep keys, replace values with type tags.
+                    const redacted = {};
+                    for (const [k, v] of Object.entries(targetArgs)) {
+                        if (v === null)
+                            redacted[k] = "<null>";
+                        else if (Array.isArray(v))
+                            redacted[k] = "<array>";
+                        else
+                            redacted[k] = `<${typeof v}>`;
+                    }
+                    return this.jsonToolResult({
+                        confirmationRequired: true,
+                        tool: target,
+                        safetyClass: decision.safetyClass,
+                        reason: `This tool is classified ${decision.safetyClass} and requires confirmed:true to authorize the call.`,
+                        redactedArguments: redacted,
+                        next: {
+                            tool: "gateway_call_tool",
+                            arguments: {
+                                tool: target,
+                                confirmed: true,
+                                arguments: "<your original args>",
+                            },
+                        },
+                    });
+                }
+                // confirmationMapsToDownstream: only when caller confirmed AND the manifest
+                // says the downstream tool also expects a confirmation flag.
+                const dispatchArgs = { ...targetArgs };
+                if (confirmed && safety?.confirmationMapsToDownstream === true) {
+                    dispatchArgs.confirmed = true;
+                }
+                return this.callBackendTool(target, dispatchArgs, this.getCharLimit(args, "maxOutputChars"));
             }
             case MUX_TOOL_NAMES.fetchArtifact:
                 return this.jsonToolResult(this.fetchArtifact(args), DEFAULT_MUX_RESPONSE_CHAR_LIMIT);
@@ -673,6 +842,74 @@ export class Gateway {
             return value;
         return `${value.slice(0, maxChars)}\n...[truncated ${value.length - maxChars} chars by mcp-gateway]`;
     }
+    /**
+     * Phase 4: Content-aware compression of tool-output text.
+     *
+     * Gate: disabled by default (compression.enabled defaults to false).
+     * When disabled the method is a pure pass-through — zero behavior change.
+     *
+     * When active, applies applyJsonCompression() (prune→columnar→minify),
+     * stores the FULL UNCOMPRESSED ORIGINAL in the artifact store for lossless
+     * retrieval via gateway_fetch_artifact, and returns the compressed text with
+     * a self-describing marker object.
+     *
+     * In mode:"advisory" the original text is returned unchanged — only the
+     * savings are logged.  The artifact is still stored so the model can opt in
+     * to retrieval.
+     *
+     * @param text  The raw text content from a backend tool response.
+     * @param kind  Artifact kind label (e.g. "backend-tool-compressed").
+     * @returns     { text, marker? } — marker is present when compression engaged.
+     */
+    compressToolText(text, kind) {
+        // Defensive: older configs (e.g. test fixtures) may not have the compression
+        // block.  Treat missing as { enabled: false }.
+        const cfg = this.config.compression ?? { enabled: false, min_chars: 20_000, mode: "active" };
+        // Gate 1: feature disabled (default) — pure pass-through.
+        if (!cfg.enabled)
+            return { text };
+        // Gate 2: text below min_chars threshold — not worth compressing.
+        if (text.length < cfg.min_chars)
+            return { text };
+        // Gate 3: must be valid JSON — non-JSON text passes through unchanged.
+        let result;
+        try {
+            result = applyJsonCompression(text);
+        }
+        catch {
+            return { text };
+        }
+        const { compressed, savedPct } = result;
+        // Gate 4: no meaningful reduction — return original.
+        if (savedPct <= 0)
+            return { text };
+        // Store the FULL UNCOMPRESSED ORIGINAL for lossless retrieval.
+        const artifactId = this.storeArtifact(kind, text);
+        const marker = {
+            compressed: true,
+            format: "gw-compress/v1 (prune+cols/v1+minify)",
+            originalChars: text.length,
+            compressedChars: compressed.length,
+            savedPct,
+            artifactId,
+            note: "Full uncompressed original retrievable via gateway_fetch_artifact.",
+        };
+        if (cfg.mode === "advisory") {
+            this.logger.info({
+                event: "compression.advisory",
+                kind,
+                originalChars: text.length,
+                compressedChars: compressed.length,
+                savedPct,
+                artifactId,
+                msg: `compression advisory: would save ${savedPct}% (${text.length - compressed.length} chars)`,
+            });
+            // Advisory: return original text (do not alter output yet).
+            return { text, marker };
+        }
+        // Active mode: return the compressed text with the marker.
+        return { text: compressed, marker };
+    }
     compactJsonText(text, maxChars) {
         if (text.length <= maxChars)
             return text;
@@ -776,11 +1013,17 @@ export class Gateway {
             safeAutomaticRepairHints: entry.repairHints.filter((hint) => hint.safeAutomatic).length,
         };
     }
+    /** Tokenize a string for token-set ranking: lowercase, split on non-alphanumeric, dedupe. */
+    tokenize(s) {
+        const tokens = s.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 0);
+        return [...new Set(tokens)];
+    }
     searchRegisteredTools(args) {
         const query = typeof args.query === "string" ? args.query : "";
         const backendFilter = typeof args.backend === "string" ? args.backend : "";
         const limit = this.getListLimit(args);
         const totalRegisteredTools = this.toolRegistry.getAllTools().length;
+        // Query-required guard — keep exactly as before.
         if (!query.trim() && !backendFilter.trim()) {
             return {
                 totalRegisteredTools,
@@ -790,31 +1033,62 @@ export class Gateway {
                 note: "gateway_search_tools requires a query or backend filter in facade mode; it will not dump the full backend tool inventory into model context.",
             };
         }
-        const filteredEntries = this.toolRegistry.getAllEntries().filter((entry) => {
+        // Phase 1: backendFilter pre-filter (unchanged behaviour, still uses matchesSearch).
+        const backendFiltered = this.toolRegistry.getAllEntries().filter((entry) => {
+            if (!backendFilter)
+                return true;
             const backendConfig = this.backends.get(entry.backendName)?.config;
-            if (backendFilter &&
-                !this.matchesSearch([
-                    entry.backendName,
-                    backendConfig?.namespace ?? "",
-                    backendConfig && "description" in backendConfig ? backendConfig.description ?? "" : "",
-                ].join(" "), backendFilter)) {
-                return false;
-            }
-            const haystack = [
+            return this.matchesSearch([
+                entry.backendName,
+                backendConfig?.namespace ?? "",
+                backendConfig && "description" in backendConfig ? backendConfig.description ?? "" : "",
+            ].join(" "), backendFilter);
+        });
+        // Phase 2: token-set ranking.
+        const queryTokens = this.tokenize(query);
+        const queryHasTokens = queryTokens.length > 0;
+        const EXACT_MATCH_BONUS = 100_000;
+        const scored = backendFiltered.flatMap((entry) => {
+            const backendConfig = this.backends.get(entry.backendName)?.config;
+            const haystackTokens = new Set(this.tokenize([
                 entry.namespacedName,
                 entry.originalName,
                 entry.backendName,
                 backendConfig?.namespace ?? "",
                 backendConfig && "description" in backendConfig ? backendConfig.description ?? "" : "",
                 entry.tool.description ?? "",
-            ].join(" ");
-            return this.matchesSearch(haystack, query);
+                ...(entry.safety?.tags ?? []),
+            ].join(" ")));
+            // Token-set intersection score.
+            let score = 0;
+            for (const t of queryTokens) {
+                if (haystackTokens.has(t))
+                    score++;
+            }
+            // Exact-match pin: force to top regardless of score.
+            if (entry.namespacedName.toLowerCase() === query.trim().toLowerCase()) {
+                score += EXACT_MATCH_BONUS;
+            }
+            // When there are query tokens, drop entries with zero score.
+            if (queryHasTokens && score === 0)
+                return [];
+            return [{ entry, score }];
         });
-        const matches = filteredEntries.slice(0, limit).map((entry) => ({
+        // Sort: score desc, then namespacedName asc (deterministic tie-break).
+        scored.sort((a, b) => {
+            if (b.score !== a.score)
+                return b.score - a.score;
+            return a.entry.namespacedName.localeCompare(b.entry.namespacedName);
+        });
+        const ranked = scored.slice(0, limit);
+        const matches = ranked.map(({ entry, score }) => ({
             name: entry.namespacedName,
             backend: entry.backendName,
             originalName: entry.originalName,
             description: this.truncateText(entry.tool.description, 180),
+            safetyClass: entry.safety?.safetyClass ?? null,
+            tags: entry.safety?.tags ?? [],
+            score,
             describeWith: {
                 tool: MUX_TOOL_NAMES.describeTool,
                 arguments: { tool: entry.namespacedName },
@@ -823,7 +1097,7 @@ export class Gateway {
         return {
             totalRegisteredTools,
             returned: matches.length,
-            omittedByLimit: Math.max(0, filteredEntries.length - matches.length),
+            omittedByLimit: Math.max(0, scored.length - matches.length),
             matches,
         };
     }
@@ -1035,6 +1309,8 @@ export class Gateway {
         const content = Array.isArray(record.content) ? record.content : [];
         let remaining = maxOutputChars;
         let truncated = false;
+        // Collect compression markers to prepend once, even if multiple text items compressed.
+        const compressionMarkers = [];
         const compactContent = content.map((item) => {
             if (!item || typeof item !== "object")
                 return item;
@@ -1044,15 +1320,22 @@ export class Gateway {
                     truncated = true;
                     return { ...entry, text: "[mcp-gateway truncated additional text content]" };
                 }
-                if (entry.text.length > remaining) {
+                // Phase 4: attempt compression BEFORE applying the char-cap.
+                // compressToolText is a pure pass-through when compression.enabled=false.
+                const { text: maybeCompressed, marker } = this.compressToolText(entry.text, "backend-tool-compressed");
+                const workingText = maybeCompressed;
+                if (marker)
+                    compressionMarkers.push(marker);
+                if (workingText.length > remaining) {
                     truncated = true;
-                    const artifactId = this.storeArtifact("backend-tool-text", entry.text);
-                    const text = `${entry.text.slice(0, remaining)}\n...[truncated ${entry.text.length - remaining} chars by mcp-gateway; artifactId=${artifactId}; fetch next page with ${MUX_TOOL_NAMES.fetchArtifact}]`;
+                    // Store the working text (compressed if active, original if advisory/disabled).
+                    const artifactId = this.storeArtifact("backend-tool-text", workingText);
+                    const text = `${workingText.slice(0, remaining)}\n...[truncated ${workingText.length - remaining} chars by mcp-gateway; artifactId=${artifactId}; fetch next page with ${MUX_TOOL_NAMES.fetchArtifact}]`;
                     remaining = 0;
                     return { ...entry, text };
                 }
-                remaining -= entry.text.length;
-                return entry;
+                remaining -= workingText.length;
+                return { ...entry, text: workingText };
             }
             const serialized = JSON.stringify(entry);
             if (serialized.length > Math.max(1_000, remaining)) {
@@ -1071,6 +1354,14 @@ export class Gateway {
             compactContent.unshift({
                 type: "text",
                 text: `mcp-gateway compacted the backend response to stay under ${maxOutputChars} chars. Narrow the request, use ${MUX_TOOL_NAMES.describeTool} before calling schema-heavy tools, or fetch a referenced artifact page explicitly.`,
+            });
+        }
+        // Phase 4: prepend compression marker(s) so the model sees compaction metadata.
+        // Only present when compression.enabled=true and active mode engaged at least once.
+        for (const marker of compressionMarkers) {
+            compactContent.unshift({
+                type: "text",
+                text: JSON.stringify(marker),
             });
         }
         return {

@@ -2,9 +2,11 @@ export class ToolRegistry {
     tools = new Map();
     logger;
     globalPrefix;
-    constructor(logger, globalPrefix = "") {
+    classify;
+    constructor(logger, globalPrefix = "", classify) {
         this.logger = logger;
         this.globalPrefix = globalPrefix;
+        this.classify = classify;
     }
     /** Register all tools from a backend, namespacing them */
     registerBackend(backendName, namespace, tools) {
@@ -13,12 +15,16 @@ export class ToolRegistry {
         const prefix = this.globalPrefix ? `${this.globalPrefix}${namespace}` : namespace;
         for (const tool of tools) {
             const namespacedName = `${prefix}_${tool.name}`;
-            this.tools.set(namespacedName, {
+            const entry = {
                 namespacedName,
                 originalName: tool.name,
                 backendName,
                 tool: { ...tool, name: namespacedName },
-            });
+            };
+            if (this.classify) {
+                entry.safety = this.classify(backendName, tool.name, namespacedName);
+            }
+            this.tools.set(namespacedName, entry);
         }
         this.logger.info(`Registered ${tools.length} tools from backend "${backendName}" (namespace: ${prefix})`);
     }

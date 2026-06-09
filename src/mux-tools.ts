@@ -68,7 +68,7 @@ export function getMuxTools(): Tool[] {
     },
     {
       name: MUX_TOOL_NAMES.callTool,
-      description: "Call one namespaced backend tool returned by gateway_search_tools. Large responses are compacted with artifact refs.",
+      description: "Call one namespaced backend tool returned by gateway_search_tools. Large responses are compacted with artifact refs. Safety contract: tools classified as WRITE, SIDE_EFFECT, HUMAN_OUTBOUND, PRODUCTION, or VAULT_VALUE require confirmed:true to authorize the call. READ tools need no confirmation. In advisory mode (default) unconfirmed write-class calls are logged but still proceed; in blocking mode they return a confirmationRequired response with a redacted argument preview.",
       inputSchema: {
         type: "object",
         properties: {
@@ -77,6 +77,10 @@ export function getMuxTools(): Tool[] {
           maxOutputChars: {
             type: "number",
             description: "Optional response text budget. Defaults to the gateway facade cap and is bounded by a hard max.",
+          },
+          confirmed: {
+            type: "boolean",
+            description: "Set true to authorize a tool the gateway classifies as WRITE/SIDE_EFFECT/HUMAN_OUTBOUND/PRODUCTION/VAULT_VALUE. READ tools need no confirmation. In advisory mode this is logged but not enforced.",
           },
         },
         required: ["tool"],

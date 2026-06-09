@@ -1,5 +1,6 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Logger } from "./logger.js";
+import type { SafetyClassification } from "./manifest.js";
 
 export interface ToolEntry {
   /** The namespaced tool name exposed to clients */
@@ -10,16 +11,32 @@ export interface ToolEntry {
   backendName: string;
   /** Full tool definition with namespaced name */
   tool: Tool;
+  /** Safety classification (set when a classifier is provided to the registry) */
+  safety?: SafetyClassification;
 }
 
 export class ToolRegistry {
   private tools = new Map<string, ToolEntry>();
   private logger: Logger;
   private globalPrefix: string;
+  private classify?: (
+    backendName: string,
+    originalName: string,
+    namespacedName: string
+  ) => SafetyClassification;
 
-  constructor(logger: Logger, globalPrefix = "") {
+  constructor(
+    logger: Logger,
+    globalPrefix = "",
+    classify?: (
+      backendName: string,
+      originalName: string,
+      namespacedName: string
+    ) => SafetyClassification
+  ) {
     this.logger = logger;
     this.globalPrefix = globalPrefix;
+    this.classify = classify;
   }
 
   /** Register all tools from a backend, namespacing them */
@@ -30,12 +47,16 @@ export class ToolRegistry {
     const prefix = this.globalPrefix ? `${this.globalPrefix}${namespace}` : namespace;
     for (const tool of tools) {
       const namespacedName = `${prefix}_${tool.name}`;
-      this.tools.set(namespacedName, {
+      const entry: ToolEntry = {
         namespacedName,
         originalName: tool.name,
         backendName,
         tool: { ...tool, name: namespacedName },
-      });
+      };
+      if (this.classify) {
+        entry.safety = this.classify(backendName, tool.name, namespacedName);
+      }
+      this.tools.set(namespacedName, entry);
     }
     this.logger.info(
       `Registered ${tools.length} tools from backend "${backendName}" (namespace: ${prefix})`
