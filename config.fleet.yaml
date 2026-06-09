@@ -31,14 +31,30 @@ fleet:
       - open-swarm
       - atlassian
       - ms365
+      - az-teams
 
 backends:
-  # Copilot Studio runs as a local stdio server, not in THV
+  # Unified M365 MCP — 137 tools (Teams, Mail, Calendar, Planner, To-Do, OneDrive, Flow, Contacts)
+  az-teams:
+    transport: http
+    url: "http://127.0.0.1:8365/mcp"
+    namespace: "az_teams"
+    enabled: true
+    restart_policy: "on-failure"
+    max_restarts: 3
+    connect_timeout_ms: 30000
+
+  # Copilot Studio — DISABLED 2026-05-28 per operator directive: NEVER stdio.
+  # stdio backends deadlock under gateway management (the pipe handshake hangs),
+  # fail on every connect, and waste tokens each time a client retries. The only
+  # supported transport in this fleet is streamable-http. Re-enable ONLY after
+  # this server is re-fronted behind http — wrap dist/index.js in a streamable
+  # -http transport and point `url:` at it, matching the az-teams pattern above.
   copilot-studio:
     transport: stdio
     command: "node"
     args: ["/home/user/Scripts/mcp-servers/copilot-studio-mcp/dist/index.js"]
     namespace: "copilot-studio"
-    enabled: true
+    enabled: false
     restart_policy: "on-failure"
     max_restarts: 3
