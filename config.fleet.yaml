@@ -9,7 +9,7 @@ gateway:
   name: "mcp-gateway"
   log_level: "info"
   tool_prefix: ""
-  tool_exposure: "mux"
+  tool_exposure: "mux"  # schema default is now mux — matches pre-hardening effective value; no behavior change.
   streamable_http_stateless: true
   streamable_http_json_response: true
 
@@ -50,11 +50,15 @@ backends:
   # supported transport in this fleet is streamable-http. Re-enable ONLY after
   # this server is re-fronted behind http — wrap dist/index.js in a streamable
   # -http transport and point `url:` at it, matching the az-teams pattern above.
-  copilot-studio:
-    transport: stdio
-    command: "node"
-    args: ["/home/user/Scripts/mcp-servers/copilot-studio-mcp/dist/index.js"]
-    namespace: "copilot-studio"
-    enabled: false
-    restart_policy: "on-failure"
-    max_restarts: 3
+  #
+  # copilot-studio:
+  #   transport: stdio          <-- PROHIBITED: stdio deadlocks under gateway management
+  #   command: "node"
+  #   args: ["/home/user/Scripts/mcp-servers/copilot-studio-mcp/dist/index.js"]
+  #   namespace: "copilot-studio"
+  #   enabled: false
+  #   restart_policy: "on-failure"
+  #   max_restarts: 3
+
+safety:
+  enforce: "advisory"  # schema default is now blocking — explicit value preserves pre-hardening behavior; flip deliberately.
