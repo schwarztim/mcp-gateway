@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -24,7 +27,7 @@ import { watch, type FSWatcher } from "chokidar";
 import { loadConfig } from "./config.js";
 import { buildToolHiveFleetInventory, type FleetEntry } from "./fleet-inventory.js";
 import { buildFleetMcpuConfig } from "./fleet-mcpu-config.js";
-import { loadFleetBackendsFromMcpuConfig, type FleetIngestResult } from "./fleet-backend-ingestion.js";
+import { loadFleetBackendsFromMcpuConfig, type FleetIngestResult, type QuarantineRecord } from "./fleet-backend-ingestion.js";
 import { getMuxTools, isMuxToolName, MUX_TOOL_NAMES, type MuxToolName, extractCallToolArgs } from "./mux-tools.js";
 
 // ── Phase 4: Content-aware compression helpers (zero-dependency, native TS) ────
@@ -215,6 +218,12 @@ export class Gateway {
   private configWatcher?: FSWatcher;
   private configReloadInFlight?: Promise<void>;
   private fleetIngestInFlight?: Promise<FleetIngestResult>;
+  // Quarantined fleet entries from the most recent ingest (Deliverable 16) —
+  // surfaced via gateway_backend_status so unsafe/unroutable backends stay visible.
+  private fleetQuarantined: QuarantineRecord[] = [];
+  // Decision-log bookkeeping: create the parent dir once, log a write error once.
+  private decisionLogDirReady = false;
+  private decisionLogErrorLogged = false;
 
   constructor(config: Config, configPath: string, logger: Logger) {
     this.config = config;
@@ -256,7 +265,11 @@ export class Gateway {
         const args: Record<string, unknown> = request.params.arguments ?? {};
 
         if (isMuxToolName(toolName)) return this.handleMuxTool(toolName, args);
-        return this.callBackendTool(toolName, args);
+        // Direct (namespaced) dispatch path. There is no confirmation envelope
+        // here — `confirmed` is structurally false. A `confirmed` key inside the
+        // namespaced args is treated as a genuine backend parameter and is
+        // neither read nor stripped by the gateway.
+        return this.dispatchToolCall(toolName, args, { path: "direct", confirmed: false });
       }
     );
 
@@ -808,54 +821,22 @@ export class Gateway {
           };
         }
 
-        // ── Safety confirmation gate ──────────────────────────────────────────
-        const entry = this.toolRegistry.resolve(target);
-        const confirmed = args.confirmed === true;
-        const safety = entry?.safety;
-        const decision = decideGate(safety, confirmed, this.config.safety.enforce);
-
-        if (decision.action === "warn") {
-          this.logger.warn({
-            event: "safety.would_block",
-            tool: target,
-            safetyClass: decision.safetyClass,
-            source: decision.source,
-            msg: "advisory: unconfirmed write-class tool call — would block in blocking mode",
-          });
-          // Advisory mode: fall through and dispatch as normal (zero behavior change).
-        } else if (decision.action === "block") {
-          // Redact argument values: keep keys, replace values with type tags.
-          const redacted: Record<string, string> = {};
-          for (const [k, v] of Object.entries(targetArgs)) {
-            if (v === null) redacted[k] = "<null>";
-            else if (Array.isArray(v)) redacted[k] = "<array>";
-            else redacted[k] = `<${typeof v}>`;
-          }
-          return this.jsonToolResult({
-            confirmationRequired: true,
-            tool: target,
-            safetyClass: decision.safetyClass,
-            reason: `This tool is classified ${decision.safetyClass} and requires confirmed:true to authorize the call.`,
-            redactedArguments: redacted,
-            next: {
-              tool: "gateway_call_tool",
-              arguments: {
-                tool: target,
-                confirmed: true,
-                arguments: "<your original args>",
-              },
-            },
-          });
-        }
-
         // confirmationMapsToDownstream: only when caller confirmed AND the manifest
         // says the downstream tool also expects a confirmation flag.
+        const confirmed = args.confirmed === true;
+        const safety = this.toolRegistry.resolve(target)?.safety;
         const dispatchArgs = { ...targetArgs };
         if (confirmed && safety?.confirmationMapsToDownstream === true) {
           dispatchArgs.confirmed = true;
         }
 
-        return this.callBackendTool(target, dispatchArgs, this.getCharLimit(args, "maxOutputChars"));
+        // All gating happens inside dispatchToolCall — the single Policy
+        // Enforcement Point shared with the direct path.
+        return this.dispatchToolCall(target, dispatchArgs, {
+          path: "mux",
+          confirmed,
+          maxOutputChars: this.getCharLimit(args, "maxOutputChars"),
+        });
       }
       case MUX_TOOL_NAMES.fetchArtifact:
         return this.jsonToolResult(this.fetchArtifact(args), DEFAULT_MUX_RESPONSE_CHAR_LIMIT);
@@ -1362,11 +1343,111 @@ export class Gateway {
       returnedBackends: includeBackends ? compactBackends.length : 0,
       omittedBackends: includeBackends ? Math.max(0, matchedBackends.length - compactBackends.length) : matchedBackends.length,
       degradedBackends,
+      quarantined: this.fleetQuarantined.slice(0, limit),
       backends: includeBackends ? compactBackends : undefined,
       note: includeBackends
         ? "Backend list is capped. Omit includeBackends for summary-only status."
         : "Summary-only facade response. Set backend=<name> or includeBackends=true for a capped backend list.",
     };
+  }
+
+  /**
+   * Single Policy Enforcement Point for backend tool dispatch (C5).
+   *
+   * EVERY tool-dispatch path — the mux facade (gateway_call_tool) and the
+   * direct namespaced path (CallToolRequest with a backend tool name) — must
+   * route through this method. It resolves the registry entry, computes the
+   * gate decision, emits the safety decision log line, and only then calls
+   * the strictly-internal callBackendTool.
+   *
+   * callBackendTool MUST have no caller other than this method.
+   */
+  private async dispatchToolCall(
+    toolName: string,
+    targetArgs: Record<string, unknown>,
+    opts: { path: "mux" | "direct"; confirmed: boolean; maxOutputChars?: number }
+  ): Promise<{ content: any[]; isError?: boolean }> {
+    const entry = this.toolRegistry.resolve(toolName);
+    const safety = entry?.safety;
+    const enforce = this.config.safety.enforce;
+    const decision = decideGate(safety, opts.confirmed, enforce);
+
+    // C3: append-only safety decision log — one line per dispatch decision,
+    // emitted BEFORE dispatch so blocked calls are recorded too.
+    this.logSafetyDecision({
+      ts: new Date().toISOString(),
+      path: opts.path,
+      tool: toolName,
+      backend: entry?.backendName ?? null,
+      safetyClass: safety?.safetyClass ?? null,
+      source: safety?.source ?? null,
+      decision: decision.action,
+      enforce,
+    });
+
+    if (decision.action === "warn") {
+      this.logger.warn({
+        event: decision.safetyClass === "UNCLASSIFIED" ? "safety.unclassified" : "safety.would_block",
+        tool: toolName,
+        path: opts.path,
+        safetyClass: decision.safetyClass,
+        source: decision.source,
+        msg:
+          decision.safetyClass === "UNCLASSIFIED"
+            ? "unclassified tool call — no manifest entry and no write-verb match; proceeding with telemetry"
+            : "advisory: unconfirmed write-class tool call — would block in blocking mode",
+      });
+      // Warn = proceed + log. Fall through to dispatch.
+    } else if (decision.action === "block") {
+      // Redact argument values: keep keys, replace values with type tags.
+      const redacted: Record<string, string> = {};
+      for (const [k, v] of Object.entries(targetArgs)) {
+        if (v === null) redacted[k] = "<null>";
+        else if (Array.isArray(v)) redacted[k] = "<array>";
+        else redacted[k] = `<${typeof v}>`;
+      }
+      return this.jsonToolResult({
+        confirmationRequired: true,
+        tool: toolName,
+        safetyClass: decision.safetyClass,
+        source: decision.source,
+        reason: `This tool is classified ${decision.safetyClass} and requires confirmed:true to authorize the call.`,
+        redactedArguments: redacted,
+        ...(opts.path === "direct"
+          ? { remedy: "invoke via gateway_call_tool with confirmed:true" }
+          : {}),
+      });
+    }
+
+    return this.callBackendTool(toolName, targetArgs, opts.maxOutputChars);
+  }
+
+  /**
+   * C3: append one JSONL line to the configured safety decision log.
+   * Default-off (safety.decision_log.enabled = false). On any write error:
+   * logger.error once, then proceed — fail-open is the documented Phase-0 seed.
+   */
+  private logSafetyDecision(line: Record<string, unknown>): void {
+    const cfg = this.config.safety.decision_log;
+    if (!cfg?.enabled) return;
+    try {
+      let logPath = cfg.path;
+      if (logPath.startsWith("~")) {
+        logPath = join(homedir(), logPath.slice(1));
+      }
+      if (!this.decisionLogDirReady) {
+        mkdirSync(dirname(logPath), { recursive: true });
+        this.decisionLogDirReady = true;
+      }
+      appendFileSync(logPath, `${JSON.stringify(line)}\n`);
+    } catch (err) {
+      if (!this.decisionLogErrorLogged) {
+        this.logger.error(
+          `Safety decision log write failed (proceeding without logging — fail-open): ${err instanceof Error ? err.message : String(err)}`
+        );
+        this.decisionLogErrorLogged = true;
+      }
+    }
   }
 
   private async callBackendTool(
@@ -1818,6 +1899,10 @@ export class Gateway {
       this.logger
     );
 
+    // Deliverable 16: retain quarantined entries from the latest ingest so
+    // gateway_backend_status can surface them.
+    this.fleetQuarantined = result.quarantined;
+
     const connectEntries: Array<[string, BackendConfig]> = [];
     let unchanged = 0;
     let updated = 0;
@@ -1913,6 +1998,10 @@ export class Gateway {
       `${connected}/${this.backends.size} backends connected, ${this.toolRegistry.getAllTools().length} tools available`
     );
 
+    // Boot report: per-backend UNCLASSIFIED tool counts + names so missing
+    // manifest coverage is visible at startup.
+    this.logUnclassifiedBootReport();
+
     // Start health monitoring
     this.startHealthMonitor();
 
@@ -1944,6 +2033,25 @@ export class Gateway {
         resolve();
       });
     });
+  }
+
+  /**
+   * Log per-backend UNCLASSIFIED tool counts and names (one info line per
+   * backend with any). Telemetry for manifest coverage gaps — no enforcement.
+   */
+  private logUnclassifiedBootReport(): void {
+    const byBackend = new Map<string, string[]>();
+    for (const entry of this.toolRegistry.getAllEntries()) {
+      if (entry.safety?.safetyClass !== "UNCLASSIFIED") continue;
+      const list = byBackend.get(entry.backendName) ?? [];
+      list.push(entry.namespacedName);
+      byBackend.set(entry.backendName, list);
+    }
+    for (const [backendName, tools] of byBackend) {
+      this.logger.info(
+        `Safety boot report: backend "${backendName}" has ${tools.length} UNCLASSIFIED tool(s): ${tools.join(", ")}`
+      );
+    }
   }
 
   async stop(): Promise<void> {

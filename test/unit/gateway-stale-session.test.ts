@@ -39,6 +39,10 @@ const minimalConfig: Config = {
     },
   },
   backends: {},
+  safety: {
+    enforce: "advisory",
+    decision_log: { enabled: false, path: "" },
+  },
 };
 
 // Build the McpError-shaped object the SDK surfaces. The real SDK McpError sets

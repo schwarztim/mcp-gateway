@@ -20,7 +20,7 @@ export interface SafetyClassification {
   writeGuard?: string;
   confirmationMapsToDownstream: boolean;
   locality?: string;
-  source: "manifest" | "name-pattern";
+  source: "manifest" | "name-pattern" | "unclassified";
 }
 
 // ─── Manifest file format (isaac-router-manifest/v1) ─────────────────────────
@@ -61,25 +61,35 @@ type ManifestFile = z.infer<typeof ManifestFileSchema>;
  * Exported so contract audits and tests can reuse the same regex.
  */
 export const WRITE_VERB_REGEX =
-  /(?:^|_)(?:create|update|delete|send|reply|upload|move|copy|archive|set|add|remove|patch|post)(?:_|$)/i;
+  /(?:^|_)(?:create|update|delete|send|reply|upload|move|copy|archive|set|add|remove|patch|post|purge|execute|run|trigger|invoke|revoke|approve|merge|deploy|restart|kill|terminate|publish|assign|transition|resolve|close|escalate)(?:_|$)/i;
 
 // ─── Gate decision helper ─────────────────────────────────────────────────────
 
 export type GateDecision =
   | { action: "proceed" }
-  | { action: "warn"; safetyClass: SafetyClass; source: "manifest" | "name-pattern" }
-  | { action: "block"; safetyClass: SafetyClass; source: "manifest" | "name-pattern" };
+  | { action: "warn"; safetyClass: SafetyClass; source: "manifest" | "name-pattern" | "unclassified" }
+  | { action: "block"; safetyClass: SafetyClass; source: "manifest" | "name-pattern" | "unclassified" };
 
 /**
  * Pure function: given a safety classification, confirmed flag, and enforce
  * mode, decide what the gate should do. Extracted for unit testing.
+ *
+ * UNCLASSIFIED is telemetry-only: it warns (proceed + log) in BOTH advisory
+ * and blocking modes and must never block — there is no confirmation contract
+ * for a tool the gateway cannot classify, only visibility.
  */
 export function decideGate(
   safety: SafetyClassification | undefined,
   confirmed: boolean,
   enforce: "advisory" | "blocking"
 ): GateDecision {
-  if (!safety || !isGatedClass(safety.safetyClass) || confirmed) {
+  if (!safety || !isGatedClass(safety.safetyClass)) {
+    return { action: "proceed" };
+  }
+  if (safety.safetyClass === "UNCLASSIFIED") {
+    return { action: "warn", safetyClass: "UNCLASSIFIED", source: safety.source };
+  }
+  if (confirmed) {
     return { action: "proceed" };
   }
   if (enforce === "advisory") {
@@ -156,9 +166,12 @@ export class ManifestRegistry {
    *
    * Priority:
    *  1. Manifest entry (source: "manifest") — exact match on backendName + originalName.
-   *  2. Fail-closed name-pattern fallback (source: "name-pattern"):
-   *     - If originalName or namespacedName contains a write verb → WRITE.
-   *     - Otherwise → READ.
+   *  2. Graduated fallback for tools with no manifest entry:
+   *     - If originalName or namespacedName contains a write verb → WRITE
+   *       (source: "name-pattern", fail-closed).
+   *     - Otherwise → UNCLASSIFIED (source: "unclassified") — proceeds with a
+   *       warning and telemetry so missing manifest coverage is visible
+   *       without blocking read-shaped tools.
    */
   classify(
     backendName: string,
@@ -184,11 +197,21 @@ export class ManifestRegistry {
     const isWrite =
       WRITE_VERB_REGEX.test(originalName) || WRITE_VERB_REGEX.test(namespacedName);
 
+    if (isWrite) {
+      return {
+        safetyClass: "WRITE",
+        tags: [],
+        confirmationMapsToDownstream: false,
+        source: "name-pattern",
+      };
+    }
+
+    // Verb-less and unmanifested → UNCLASSIFIED (warn + telemetry, never block).
     return {
-      safetyClass: isWrite ? "WRITE" : "READ",
+      safetyClass: "UNCLASSIFIED",
       tags: [],
       confirmationMapsToDownstream: false,
-      source: "name-pattern",
+      source: "unclassified",
     };
   }
 }
