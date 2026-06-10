@@ -43,6 +43,7 @@ const minimalConfig: Config = {
     enforce: "advisory",
     decision_log: { enabled: false, path: "" },
   },
+  compression: { enabled: false, min_chars: 20_000, mode: "active" as const },
 };
 
 // Build the McpError-shaped object the SDK surfaces. The real SDK McpError sets

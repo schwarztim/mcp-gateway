@@ -17,7 +17,8 @@ Operator notes for deploying the Phase-0 invariants (transport constitution + sa
 
 ## Behavior changes on restart
 
-- Write-class calls without `confirmed: true` now return `confirmationRequired` instead of executing. qbot/Karen callers must pass `confirmed: true` for intended writes.
+- **Safety enforcement mode:** `config.fleet.yaml` currently pins `safety.enforce: "advisory"` (explicit value preserving pre-hardening behavior). The schema default for *new* configs is `"blocking"`. After restart, the live gateway will run in **advisory** mode — write-class calls proceed with a warning log rather than being denied. To enable blocking enforcement, flip the value in `config.fleet.yaml` to `safety.enforce: "blocking"` and restart.
+- Write-class calls without `confirmed: true` return `confirmationRequired` only when `safety.enforce: "blocking"` is active. In advisory mode the call proceeds with a warning.
 - The disabled `copilot-studio` stdio entry is stripped at config load and logged instead of parsed.
 - The UNCLASSIFIED boot report appears in the logs. Use it to draft manifests for the ~11 backends that lack them — completing manifest coverage is the path to flipping UNCLASSIFIED from warn to block in a later phase.
 

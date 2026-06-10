@@ -16,8 +16,9 @@ export default defineConfig({
           include: ["test/e2e/**/*.test.ts"],
           environment: "node",
           // Each e2e test boots a real gateway + fake backends on free ports;
-          // serial files keep port allocation and teardown sane.
-          fileParallelism: false,
+          // serial execution keeps port allocation and teardown sane.
+          pool: "forks",
+          poolOptions: { forks: { singleFork: true } },
           testTimeout: 30_000,
           hookTimeout: 30_000,
         },
