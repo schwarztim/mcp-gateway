@@ -11,7 +11,8 @@ export type SafetyClass =
   | "SIDE_EFFECT"
   | "HUMAN_OUTBOUND"
   | "PRODUCTION"
-  | "VAULT_VALUE";
+  | "VAULT_VALUE"
+  | "UNCLASSIFIED";
 
 export interface SafetyClassification {
   safetyClass: SafetyClass;

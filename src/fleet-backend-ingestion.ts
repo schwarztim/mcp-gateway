@@ -20,9 +20,19 @@ import type { Logger } from "./logger.js";
 
 export type FleetBackendConfig = HttpBackendConfig | SseBackendConfig | StdioBackendConfig;
 
+export interface QuarantineRecord {
+  name: string;
+  transport: "stdio";
+  status: "quarantined";
+  reason: string;
+  remedy: string;
+  source: string;
+}
+
 export interface FleetIngestResult {
   backends: Record<string, FleetBackendConfig>;
   skipped: Array<{ name: string; reason: string }>;
+  quarantined: QuarantineRecord[];
   source: string;
   sources: string[];
   generatedAt: string;
@@ -147,6 +157,7 @@ export async function loadFleetBackendsFromMcpuConfig(
   const result: FleetIngestResult = {
     backends: {},
     skipped: [],
+    quarantined: [],
     source: configSources.map((s) => s.path).join(", "),
     sources: configSources.map((s) => s.path),
     generatedAt: new Date().toISOString(),

@@ -109,6 +109,12 @@ const FleetConfigSchema = z.object({
 const SafetyConfigSchema = z.object({
   enforce: z.enum(["advisory", "blocking"]).default("advisory"),
   manifest_dir: z.string().optional(),
+  decision_log: z
+    .object({
+      enabled: z.boolean().default(false),
+      path: z.string().default("~/.mcp-gateway/decisions.jsonl"),
+    })
+    .default({}),
 });
 
 const CompressionConfigSchema = z.object({
