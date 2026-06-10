@@ -147,10 +147,10 @@ describe("ManifestRegistry — missing manifest directory", () => {
     expect(sendResult.safetyClass).toBe("WRITE");
     expect(sendResult.source).toBe("name-pattern");
 
-    // Name-pattern fallback: get → READ
+    // Verb-less fallback: get → UNCLASSIFIED (C4: no write-verb → telemetry-only, never block)
     const getResult = reg.classify("any-backend", "get_status", "any_get_status");
-    expect(getResult.safetyClass).toBe("READ");
-    expect(getResult.source).toBe("name-pattern");
+    expect(getResult.safetyClass).toBe("UNCLASSIFIED");
+    expect(getResult.source).toBe("unclassified");
   });
 });
 
@@ -256,10 +256,10 @@ describe("ManifestRegistry — name-pattern fallback (no manifest for backend)",
     expect(result.confirmationMapsToDownstream).toBe(false);
   });
 
-  it("classifies _get_ tool as READ by name-pattern", () => {
+  it("classifies _get_ tool as UNCLASSIFIED (verb-less, no write-verb match)", () => {
     const result = reg.classify("unknown-backend", "get_status", "ub_get_status");
-    expect(result.safetyClass).toBe("READ");
-    expect(result.source).toBe("name-pattern");
+    expect(result.safetyClass).toBe("UNCLASSIFIED");
+    expect(result.source).toBe("unclassified");
   });
 
   it("classifies _delete tool as WRITE by name-pattern", () => {
@@ -268,10 +268,10 @@ describe("ManifestRegistry — name-pattern fallback (no manifest for backend)",
     expect(result.source).toBe("name-pattern");
   });
 
-  it("classifies list_ tool as READ by name-pattern", () => {
+  it("classifies list_ tool as UNCLASSIFIED (verb-less, no write-verb match)", () => {
     const result = reg.classify("unknown-backend", "list_items", "ub_list_items");
-    expect(result.safetyClass).toBe("READ");
-    expect(result.source).toBe("name-pattern");
+    expect(result.safetyClass).toBe("UNCLASSIFIED");
+    expect(result.source).toBe("unclassified");
   });
 });
 

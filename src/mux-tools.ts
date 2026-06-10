@@ -68,7 +68,7 @@ export function getMuxTools(): Tool[] {
     },
     {
       name: MUX_TOOL_NAMES.callTool,
-      description: "Call one namespaced backend tool returned by gateway_search_tools. Large responses are compacted with artifact refs. Safety contract: tools classified as WRITE, SIDE_EFFECT, HUMAN_OUTBOUND, PRODUCTION, or VAULT_VALUE require confirmed:true to authorize the call. READ tools need no confirmation. In advisory mode (default) unconfirmed write-class calls are logged but still proceed; in blocking mode they return a confirmationRequired response with a redacted argument preview.",
+      description: "Call one namespaced backend tool returned by gateway_search_tools. Large responses are compacted with artifact refs. Safety contract: tools classified as WRITE, SIDE_EFFECT, HUMAN_OUTBOUND, PRODUCTION, or VAULT_VALUE require confirmed:true to authorize the call. Blocking is the default posture: an unconfirmed write-class call returns a confirmationRequired response with a redacted argument preview and is not dispatched. READ tools need no confirmation. UNCLASSIFIED tools (no manifest entry, no write-verb match) proceed with a logged warning in every mode. In advisory mode unconfirmed write-class calls are logged but still proceed.",
       inputSchema: {
         type: "object",
         properties: {
@@ -80,7 +80,7 @@ export function getMuxTools(): Tool[] {
           },
           confirmed: {
             type: "boolean",
-            description: "Set true to authorize a tool the gateway classifies as WRITE/SIDE_EFFECT/HUMAN_OUTBOUND/PRODUCTION/VAULT_VALUE. READ tools need no confirmation. In advisory mode this is logged but not enforced.",
+            description: "Set true to authorize a tool the gateway classifies as WRITE/SIDE_EFFECT/HUMAN_OUTBOUND/PRODUCTION/VAULT_VALUE. READ and UNCLASSIFIED tools need no confirmation.",
           },
         },
         required: ["tool"],
