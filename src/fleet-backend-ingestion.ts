@@ -13,12 +13,11 @@ import { join } from "node:path";
 import type {
   HttpBackendConfig,
   SseBackendConfig,
-  StdioBackendConfig,
   ToolHiveFleetConfig,
 } from "./config.js";
 import type { Logger } from "./logger.js";
 
-export type FleetBackendConfig = HttpBackendConfig | SseBackendConfig | StdioBackendConfig;
+export type FleetBackendConfig = HttpBackendConfig | SseBackendConfig;
 
 export interface QuarantineRecord {
   name: string;
@@ -199,27 +198,17 @@ export async function loadFleetBackendsFromMcpuConfig(
       );
 
       if (type === "stdio") {
-        if (!entry.command) {
-          result.skipped.push({ name, reason: `stdio entry has no command (${source.path})` });
-          continue;
-        }
-        const config: StdioBackendConfig = {
+        result.quarantined.push({
+          name,
           transport: "stdio",
-          command: entry.command,
-          args: entry.args ?? [],
-          cwd: entry.cwd,
-          env: entry.env ?? {},
-          namespace,
-          enabled: true,
-          max_restarts: 5,
-          connect_timeout_ms: 15_000,
-          restart_policy: "on-failure",
-          health_check_interval: 30,
+          status: "quarantined",
+          reason: "stdio-unsupported",
+          remedy: "re-front behind streamable-http",
           source: source.source,
-          description: entry.description,
-        };
-        result.backends[name] = config;
-        logger.debug(`Fleet ingestion: will connect "${name}" as stdio backend from ${source.path}`);
+        });
+        logger.error(
+          `Fleet ingestion: quarantined "${name}" (transport=stdio, source=${source.path}): stdio-unsupported — re-front behind streamable-http`
+        );
         continue;
       }
 
@@ -285,7 +274,7 @@ export async function loadFleetBackendsFromMcpuConfig(
   }
 
   logger.info(
-    `Fleet ingestion: ${Object.keys(result.backends).length} backends loaded from ${configSources.length} MCPU config source(s) (${result.skipped.length} skipped)`
+    `Fleet ingestion: ${Object.keys(result.backends).length} backends loaded from ${configSources.length} MCPU config source(s) (${result.skipped.length} skipped, ${result.quarantined.length} quarantined)`
   );
   return result;
 }

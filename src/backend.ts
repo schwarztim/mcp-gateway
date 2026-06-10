@@ -1,11 +1,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type {
   BackendConfig,
-  StdioBackendConfig,
   SseBackendConfig,
   HttpBackendConfig,
 } from "./config.js";
@@ -32,7 +30,7 @@ export class BackendInstance {
   readonly name: string;
   readonly config: BackendConfig;
   private client: Client | null = null;
-  private transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport | null = null;
+  private transport: SSEClientTransport | StreamableHTTPClientTransport | null = null;
   private _status: BackendStatus = "disconnected";
   private _tools: Tool[] = [];
   private _error?: string;
@@ -48,6 +46,11 @@ export class BackendInstance {
     logger: Logger,
     onToolsChanged?: () => void
   ) {
+    if (config.transport !== "http" && config.transport !== "sse") {
+      throw new Error(
+        `TransportViolation: backend "${name}" declares unsupported transport "${(config as { transport?: string }).transport}" — only streamable-http and sse are representable`
+      );
+    }
     this.name = name;
     this.config = config;
     this.logger = logger;
@@ -98,9 +101,7 @@ export class BackendInstance {
         { capabilities: {} }
       );
 
-      if (this.config.transport === "stdio") {
-        await this.connectStdio(this.config);
-      } else if (this.config.transport === "http") {
+      if (this.config.transport === "http") {
         await this.connectHttp(this.config);
       } else {
         await this.connectSse(this.config);
@@ -131,32 +132,6 @@ export class BackendInstance {
       }
       throw err;
     }
-  }
-
-  private async connectStdio(config: StdioBackendConfig): Promise<void> {
-    const mergedEnv = { ...process.env, ...config.env };
-    this.transport = new StdioClientTransport({
-      command: config.command,
-      args: config.args,
-      cwd: config.cwd,
-      env: mergedEnv as Record<string, string>,
-    });
-
-    // Handle process exit for auto-restart
-    this.transport.onclose = () => {
-      if (this._status === "connected") {
-        this.logger.warn(`Backend "${this.name}" stdio process exited`);
-        this._status = "disconnected";
-        this.handleDisconnect();
-      }
-    };
-
-    this.transport.onerror = (err) => {
-      this.logger.error(`Backend "${this.name}" stdio error: ${err.message}`);
-      this._error = err.message;
-    };
-
-    await this.client!.connect(this.transport);
   }
 
   private async connectSse(config: SseBackendConfig): Promise<void> {
@@ -210,18 +185,8 @@ export class BackendInstance {
   }
 
   private handleDisconnect(): void {
-    const policy =
-      this.config.transport === "stdio"
-        ? this.config.restart_policy
-        : this.config.transport === "http"
-          ? this.config.restart_policy
-          : this.config.restart_policy;
-    const maxRestarts =
-      this.config.transport === "stdio"
-        ? this.config.max_restarts
-        : this.config.transport === "http"
-          ? this.config.max_restarts
-          : this.config.max_restarts;
+    const policy = this.config.restart_policy;
+    const maxRestarts = this.config.max_restarts;
 
     if (
       policy === "never" ||
@@ -234,12 +199,7 @@ export class BackendInstance {
     }
 
     this._restartCount++;
-    const delay =
-      this.config.transport === "sse"
-        ? this.config.reconnect_interval
-        : this.config.transport === "http"
-          ? this.config.reconnect_interval
-          : 2;
+    const delay = this.config.reconnect_interval;
     this.logger.info(
       `Backend "${this.name}" reconnecting in ${delay}s (attempt ${this._restartCount})`
     );

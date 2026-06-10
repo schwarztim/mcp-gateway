@@ -3,26 +3,6 @@ import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import Vault from "node-vault";
 
-const StdioBackendSchema = z.object({
-  transport: z.literal("stdio"),
-  command: z.string(),
-  args: z.array(z.string()).default([]),
-  cwd: z.string().optional(),
-  env: z.record(z.string()).default({}),
-  namespace: z.string(),
-  enabled: z.boolean().default(true),
-  restart_policy: z
-    .enum(["always", "on-failure", "never"])
-    .default("on-failure"),
-  max_restarts: z.number().default(5),
-  connect_timeout_ms: z.number().int().positive().default(15_000),
-  health_check_interval: z.number().default(30),
-  /** Informational: source of this backend entry (e.g. "fleet-mcpu-static") */
-  source: z.string().optional(),
-  /** Informational: original description from the source config */
-  description: z.string().optional(),
-});
-
 const SseBackendSchema = z.object({
   transport: z.literal("sse"),
   url: z.string().url(),
@@ -61,7 +41,6 @@ const HttpBackendSchema = z.object({
 });
 
 const BackendSchema = z.discriminatedUnion("transport", [
-  StdioBackendSchema,
   SseBackendSchema,
   HttpBackendSchema,
 ]);
@@ -107,7 +86,7 @@ const FleetConfigSchema = z.object({
 });
 
 const SafetyConfigSchema = z.object({
-  enforce: z.enum(["advisory", "blocking"]).default("advisory"),
+  enforce: z.enum(["advisory", "blocking"]).default("blocking"),
   manifest_dir: z.string().optional(),
   decision_log: z
     .object({
@@ -137,7 +116,6 @@ const ConfigFileSchema = z.object({
   compression: CompressionConfigSchema.default({}),
 });
 
-export type StdioBackendConfig = z.infer<typeof StdioBackendSchema>;
 export type SseBackendConfig = z.infer<typeof SseBackendSchema>;
 export type HttpBackendConfig = z.infer<typeof HttpBackendSchema>;
 export type BackendConfig = z.infer<typeof BackendSchema>;
@@ -230,6 +208,39 @@ async function resolveVaultInObject(obj: unknown): Promise<unknown> {
   return obj;
 }
 
+/**
+ * Pre-parse quarantine filter: stdio is not representable in the config schema.
+ * Any backend entry declaring `transport: stdio` (or having a `command` with no
+ * `url`) is stripped BEFORE schema validation so the gateway boots on with the
+ * entry removed — fail-closed for the entry, fail-open for the gateway.
+ */
+function quarantineStdioBackends(resolved: unknown): unknown {
+  if (!resolved || typeof resolved !== "object" || Array.isArray(resolved)) {
+    return resolved;
+  }
+  const root = resolved as Record<string, unknown>;
+  const backends = root.backends;
+  if (!backends || typeof backends !== "object" || Array.isArray(backends)) {
+    return resolved;
+  }
+  const backendsRecord = backends as Record<string, unknown>;
+  for (const [name, entry] of Object.entries(backendsRecord)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const e = entry as Record<string, unknown>;
+    const isStdio =
+      e.transport === "stdio" ||
+      (e.command !== undefined && e.url === undefined);
+    if (isStdio) {
+      delete backendsRecord[name];
+      // loadConfig has no logger — index.ts creates the logger after loadConfig.
+      console.error(
+        `[config] quarantined backend "${name}": reason=stdio-unsupported remedy="re-front behind streamable-http"`
+      );
+    }
+  }
+  return resolved;
+}
+
 export async function loadConfig(filePath: string): Promise<Config> {
   const raw = await readFile(filePath, "utf-8");
   const parsed = parseYaml(raw);
@@ -238,6 +249,9 @@ export async function loadConfig(filePath: string): Promise<Config> {
   const envResolved = resolveEnvInObject(parsed);
   const vaultResolved = await resolveVaultInObject(envResolved);
 
+  // Quarantine stdio entries before schema parse — stdio is unrepresentable.
+  const quarantined = quarantineStdioBackends(vaultResolved);
+
   vaultCache.clear(); // free memory after load
-  return ConfigFileSchema.parse(vaultResolved);
+  return ConfigFileSchema.parse(quarantined);
 }
