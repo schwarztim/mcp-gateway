@@ -24,7 +24,7 @@ When `gateway.tool_exposure` is set to `mux`, clients see only:
 | `gateway_describe_tool` | Lazily describe one selected backend tool schema. |
 | `gateway_call_tool` | Call a namespaced backend tool returned by search. |
 | `gateway_fetch_artifact` | Fetch a capped page from an oversized result artifact. |
-| `gateway_backend_status` | Show backend connection state and tool counts. |
+| `gateway_backend_status` | Show backend connection state, tool counts, and quarantined stdio fleet entries. |
 | `gateway_fleet_inventory` | Inspect the read-only ToolHive fleet catalog. |
 | `gateway_mcpu_config` | Generate a read-only MCPU-compatible fleet config report. |
 
@@ -74,7 +74,29 @@ backends: {}
 
 In `mux` mode, backend resources and prompts are also hidden from client list calls. Large responses are capped by default, stored as in-memory artifacts, and can be paged explicitly with `gateway_fetch_artifact`. Streamable HTTP is stateless by default so stale client session IDs after a gateway restart do not keep producing `Session not found`.
 
-Static backends can still be configured under `backends` using `stdio`, `sse`, or `http` transports.
+Static backends can still be configured under `backends` using `http` (Streamable HTTP) or `sse` transports. `stdio` is not a representable backend transport: any `transport: stdio` entry is stripped at config load with a console error naming the backend (reason `stdio-unsupported`, remedy: re-front it behind streamable-http) and the gateway boots on without it, while `command:`-style entries found during fleet ingestion are quarantined into a `quarantined[]` list surfaced by `gateway_backend_status` instead of being connected.
+
+## Safety gating
+
+Every dispatch path is gated: the safety gate fires for both `gateway_call_tool` and direct namespaced tool calls, and `safety.enforce` defaults to `"blocking"`. Tool classification is graduated:
+
+- **Manifested tools** use the class declared in their manifest (`manifests/*.json`).
+- **Unmanifested tools** whose names contain a write-class verb (the built-in list plus extensions such as `execute`, `run`, `deploy`, `merge`, `revoke`, `kill`, and other mutating verbs) are classified WRITE and gated.
+- **Unmanifested verb-less tools** are UNCLASSIFIED: the call proceeds with a warning and telemetry in all modes, and boot logs a per-backend report of unclassified tools — use it to draft the missing manifests.
+
+A blocking deny returns `{ confirmationRequired: true, tool, safetyClass, source, reason, redactedArguments }`. Direct-path denials additionally include `remedy: "invoke via gateway_call_tool with confirmed:true"`, since the direct path has no confirmation envelope.
+
+Dispatch decisions can be recorded to a JSONL decision log (off by default; fail-open on write errors):
+
+```yaml
+safety:
+  enforce: "blocking"
+  decision_log:
+    enabled: false
+    path: "~/.mcp-gateway/decisions.jsonl"
+```
+
+When enabled, each dispatch decision writes one line: `{ ts, path, tool, backend, safetyClass, source, decision, enforce }`.
 
 ## Client setup
 
