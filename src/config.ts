@@ -47,11 +47,11 @@ const BackendSchema = z.discriminatedUnion("transport", [
 
 const GatewayConfigSchema = z.object({
   port: z.number().default(3100),
-  host: z.string().default("0.0.0.0"),
+  host: z.string().default("127.0.0.1"),
   name: z.string().default("mcp-gateway"),
   log_level: z.enum(["debug", "info", "warn", "error"]).default("info"),
   tool_prefix: z.string().default(""),
-  tool_exposure: z.enum(["namespaced", "mux", "both"]).default("namespaced"),
+  tool_exposure: z.enum(["namespaced", "mux", "both"]).default("mux"),
   /** Stateless Streamable HTTP prevents stale in-memory session IDs after gateway restarts */
   streamable_http_stateless: z.boolean().default(true),
   /** JSON responses keep facade calls request/response and avoid long-lived per-call SSE streams */
@@ -209,10 +209,16 @@ async function resolveVaultInObject(obj: unknown): Promise<unknown> {
 }
 
 /**
- * Pre-parse quarantine filter: stdio is not representable in the config schema.
- * Any backend entry declaring `transport: stdio` (or having a `command` with no
- * `url`) is stripped BEFORE schema validation so the gateway boots on with the
- * entry removed — fail-closed for the entry, fail-open for the gateway.
+ * Pre-parse quarantine filter: stdio is not representable in the config schema
+ * (the discriminated union has only sse/http). Any backend entry declaring
+ * `transport: stdio` — or a bare `command:` with no `url:` (implicit stdio) — is
+ * stripped BEFORE schema validation. stdio deadlocks under gateway/process-
+ * supervisor management (MCP Transport Rule — global CLAUDE.md): the handshake
+ * hangs, zero tools are exposed, and consumers burn tokens retrying. Stripping
+ * is fail-closed for the entry (it never becomes a live backend) and fail-open
+ * for the gateway (it still boots on the remaining backends instead of crash-
+ * looping). This is the project's "transport constitution" — see
+ * test/unit/config-transport.test.ts.
  */
 function quarantineStdioBackends(resolved: unknown): unknown {
   if (!resolved || typeof resolved !== "object" || Array.isArray(resolved)) {
@@ -247,11 +253,34 @@ export async function loadConfig(filePath: string): Promise<Config> {
 
   // First resolve env vars, then resolve vault references
   const envResolved = resolveEnvInObject(parsed);
-  const vaultResolved = await resolveVaultInObject(envResolved);
+  const resolved = await resolveVaultInObject(envResolved);
 
-  // Quarantine stdio entries before schema parse — stdio is unrepresentable.
-  const quarantined = quarantineStdioBackends(vaultResolved);
+  // Quarantine stdio entries before schema parse — stdio is unrepresentable and
+  // deadlocks under gateway management; strip it so the gateway boots without it.
+  const quarantined = quarantineStdioBackends(resolved);
 
   vaultCache.clear(); // free memory after load
-  return ConfigFileSchema.parse(quarantined);
+
+  const config = ConfigFileSchema.parse(quarantined);
+
+  // Reject duplicate namespaces among ENABLED backends — two enabled backends
+  // sharing a namespace would silently collide in the tool registry.
+  const namespaceOwners = new Map<string, string[]>();
+  for (const [name, backend] of Object.entries(config.backends)) {
+    if (!backend.enabled) continue;
+    const owners = namespaceOwners.get(backend.namespace) ?? [];
+    owners.push(name);
+    namespaceOwners.set(backend.namespace, owners);
+  }
+  const collisions = Array.from(namespaceOwners.entries()).filter(
+    ([, owners]) => owners.length > 1
+  );
+  if (collisions.length > 0) {
+    const detail = collisions
+      .map(([ns, owners]) => `namespace "${ns}" used by backends [${owners.join(", ")}]`)
+      .join("; ");
+    throw new Error(`Duplicate backend namespace among enabled backends: ${detail}`);
+  }
+
+  return config;
 }

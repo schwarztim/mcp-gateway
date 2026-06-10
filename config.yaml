@@ -7,7 +7,8 @@ gateway:
   name: "mcp-gateway"
   log_level: "info"
   tool_prefix: ""
-  tool_exposure: "mux"
+  # schema default is now mux/blocking — explicit value preserves pre-hardening behavior; flip deliberately.
+  tool_exposure: "namespaced"
   streamable_http_stateless: true
   streamable_http_json_response: true
 
@@ -19,16 +20,23 @@ fleet:
     probe_timeout_ms: 750
     auto_ingest: true
 
+safety:
+  # schema default is now mux/blocking — explicit value preserves pre-hardening behavior; flip deliberately.
+  enforce: "advisory"
+
 backends:
-  echo:
-    transport: stdio
-    command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-everything"]
-    namespace: "echo"
-    enabled: false
-    restart_policy: "on-failure"
-    max_restarts: 3
-    health_check_interval: 60
+  # stdio transport is prohibited — it deadlocks under gateway management
+  # (handshake hangs, zero tools exposed, consumers burn tokens retrying).
+  # Re-front any stdio MCP server behind streamable-http and wire it as http:
+  #
+  # echo:
+  #   transport: "http"
+  #   url: "http://127.0.0.1:3000/mcp"
+  #   namespace: "echo"
+  #   enabled: false
+  #   restart_policy: "on-failure"
+  #   max_restarts: 3
+  #   health_check_interval: 60
 
   example-http:
     transport: http

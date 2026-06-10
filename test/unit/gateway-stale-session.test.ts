@@ -107,6 +107,7 @@ describe("callBackendTool — auto-reconnect + retry on stale session", () => {
   function wireBackend(opts: {
     firstCallThrows: Error;
     retrySucceeds: boolean;
+    retryError?: Error;
   }): void {
     callAttempts = 0;
     restartCount = 0;
@@ -121,7 +122,7 @@ describe("callBackendTool — auto-reconnect + retry on stale session", () => {
       callTool: async (_name: string, _args: Record<string, unknown>) => {
         callAttempts++;
         if (callAttempts === 1) throw opts.firstCallThrows;
-        if (!opts.retrySucceeds) throw new Error("retry failed too");
+        if (!opts.retrySucceeds) throw opts.retryError ?? new Error("retry failed too");
         return { content: [{ type: "text", text: "ok-after-reconnect" }] };
       },
     };
@@ -167,13 +168,18 @@ describe("callBackendTool — auto-reconnect + retry on stale session", () => {
     expect(result.content[0].text).toContain("internal error");
   });
 
-  it("surfaces an error when the retry after reconnect also fails", async () => {
+  it("surfaces the retryErr (not the stale-session error) when the retry also fails", async () => {
     wireBackend({
-      firstCallThrows: mcpError(-32000, "Bad Request: No valid session ID provided"),
+      firstCallThrows: mcpError(-32001, "Session not found"),
       retrySucceeds: false,
+      retryError: new Error("ARMED_FAILURE_XYZ"),
     });
 
     const result = await gw.callBackendTool("karen_do_thing", {});
+
+    // The retry error must be surfaced, NOT the original stale-session text.
+    expect(result.content[0].text).toContain("ARMED_FAILURE_XYZ");
+    expect(result.content[0].text).not.toMatch(/session not found/i);
 
     expect(restartCount).toBe(1); // it did reconnect
     expect(callAttempts).toBe(2); // original + failed retry

@@ -129,9 +129,14 @@ Admin routes are restricted to loopback clients by default. If the gateway is ex
 ## Validation
 
 ```bash
-npm run build -- --pretty false
-npm run harness
+npm run build         # tsc — must be clean
+npm run test:unit     # vitest --project unit — fast unit suite
+npm run test:e2e      # vitest --project e2e — wire-level invariant suite (real gateway + real backends)
+npm test              # both projects
+npm run harness       # resilience harness (simulated fleet)
 ```
+
+`npm run test:e2e` boots a real gateway against real in-process MCP backends and proves the phase-0 invariants by name: meta + namespaced tool exposure, mux and direct round-trips, the WRITE confirmation gate (identical on both paths), stdio config/fleet quarantine, and unclassified warn-and-proceed. The post-integration cases run under `GW_E2E_FULL=1`.
 
 The harness verifies:
 

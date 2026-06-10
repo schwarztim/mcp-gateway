@@ -265,11 +265,14 @@ export class Gateway {
         const args: Record<string, unknown> = request.params.arguments ?? {};
 
         if (isMuxToolName(toolName)) return this.handleMuxTool(toolName, args);
-        // Direct (namespaced) dispatch path. There is no confirmation envelope
-        // here — `confirmed` is structurally false. A `confirmed` key inside the
-        // namespaced args is treated as a genuine backend parameter and is
-        // neither read nor stripped by the gateway.
-        return this.dispatchToolCall(toolName, args, { path: "direct", confirmed: false });
+        // Direct (namespaced) path: a top-level `confirmed: true` authorizes a
+        // write-class call exactly as the mux envelope does, and is stripped
+        // before forwarding so the backend never sees the gateway's flag — keeps
+        // the gate verdict byte-identical with the mux path (invariant I2).
+        const directConfirmed = args.confirmed === true;
+        const directArgs = directConfirmed ? { ...args } : args;
+        if (directConfirmed) delete (directArgs as Record<string, unknown>).confirmed;
+        return this.dispatchToolCall(toolName, directArgs, { path: "direct", confirmed: directConfirmed });
       }
     );
 
@@ -565,6 +568,7 @@ export class Gateway {
 
         backend.config.enabled = true;
         try {
+          backend.resetRestartBudget();
           await backend.restart();
           this.toolRegistry.registerBackend(
             backendName,
@@ -1497,7 +1501,17 @@ export class Gateway {
           this.logger.error(
             `Backend "${entry.backendName}" retry after auto-reconnect failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`
           );
-          // Fall through to surface the original error (per spec: retry is best-effort).
+          // Surface the RETRY error, not the healed stale-session error
+          // (invariant I5b: retryErr text surfaced, not /session not found/i).
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error calling ${entry.originalName} on backend "${entry.backendName}" after auto-reconnect retry: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+              },
+            ],
+            isError: true,
+          };
         }
       }
       return {
@@ -2101,21 +2115,21 @@ export class Gateway {
       await this.reapIdleStreamableSessions();
       for (const [name, backend] of this.backends) {
         if (backend.status === "disconnected" || backend.status === "error") {
+          // Respect restart policy: never restart "never"-policy backends; don't
+          // thrash a backend that has exhausted its restart budget.
+          const policy = backend.config.restart_policy;
+          if (policy === "never") continue;
+          if (policy === "on-failure" && backend.restartCount >= backend.config.max_restarts) continue;
+
           this.logger.info(
             `Health check: backend "${name}" is ${backend.status}, attempting reconnect...`
           );
           try {
-            await backend.restart();
+            const toolCount = await this.ensureReconnected(name);
             if ((backend.status as string) === "connected") {
-              const backendConfig = this.config.backends[name];
-              this.toolRegistry.registerBackend(
-                name,
-                backend.config.namespace,
-                backend.tools
-              );
               this.notifyToolsChanged();
               this.logger.info(
-                `Health check: backend "${name}" reconnected — ${backend.tools.length} tools`
+                `Health check: backend "${name}" reconnected — ${toolCount} tools`
               );
             }
           } catch {

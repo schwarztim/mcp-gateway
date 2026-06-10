@@ -279,7 +279,11 @@ export class BackendInstance {
   async restart(): Promise<void> {
     this.logger.info(`Restarting backend "${this.name}"...`);
     await this.disconnect();
-    this._restartCount = 0;
     await this.connect();
+  }
+
+  /** Reset the restart budget to zero (explicit operator action, e.g. /admin/enable). */
+  resetRestartBudget(): void {
+    this._restartCount = 0;
   }
 }
