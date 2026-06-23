@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -29,6 +29,7 @@ import { buildToolHiveFleetInventory, type FleetEntry } from "./fleet-inventory.
 import { buildFleetMcpuConfig } from "./fleet-mcpu-config.js";
 import { loadFleetBackendsFromMcpuConfig, type FleetIngestResult, type QuarantineRecord } from "./fleet-backend-ingestion.js";
 import { getMuxTools, isMuxToolName, MUX_TOOL_NAMES, type MuxToolName, extractCallToolArgs } from "./mux-tools.js";
+import { createEntraAuthMiddleware, type AuthedRequest, type Identity } from "./auth.js";
 
 // ── Phase 4: Content-aware compression helpers (zero-dependency, native TS) ────
 //
@@ -207,6 +208,10 @@ export class Gateway {
   private streamableTransports = new Map<string, StreamableHTTPServerTransport>();
   private sessions = new Map<string, McpServer>();
   private streamableSessionLastSeen = new Map<string, number>();
+  // Session-owner binding (N2): sessionId → oid of the identity that created
+  // the session (null when auth.mode = none). With auth on, a request bearing
+  // a foreign sessionId is rejected 403 — knowing a UUID is not authorization.
+  private sessionOwners = new Map<string, string | null>();
   private artifacts = new Map<string, GatewayArtifact>();
   // Deduplicates concurrent reconnects of the same backend so N parallel
   // stale-session errors trigger one reconnect, not N. Keyed by backend name;
@@ -229,7 +234,9 @@ export class Gateway {
     this.config = config;
     this.configPath = configPath;
     this.logger = logger;
-    this.manifests = new ManifestRegistry(logger, config.safety?.manifest_dir);
+    this.manifests = new ManifestRegistry(logger, config.safety?.manifest_dir, {
+      unmanifestedReadAllowlist: config.safety?.unmanifested_read_allowlist,
+    });
     this.toolRegistry = new ToolRegistry(
       logger,
       config.gateway.tool_prefix,
@@ -239,16 +246,27 @@ export class Gateway {
     this.setupHttpRoutes();
   }
 
-  private createSessionServer(): McpServer {
+  /**
+   * Create the per-session MCP server. The identity that authenticated the
+   * creating HTTP request (auth.mode = entra) is captured in the handler
+   * closures so every dispatch from this session is user-attributed in the
+   * decision log. Identity is undefined in auth.mode = none.
+   */
+  private createSessionServer(identity?: Identity): McpServer {
     const server = new McpServer(
       { name: this.config.gateway.name, version: "1.0.0" },
       { capabilities: { tools: { listChanged: true }, resources: {}, prompts: {} } }
     );
-    this.setupMcpHandlers(server);
+    this.setupMcpHandlers(server, identity);
     return server;
   }
 
-  private setupMcpHandlers(mcpServer: McpServer): void {
+  /** Identity attached by the auth middleware, if any. */
+  private requestIdentity(req: Request): Identity | undefined {
+    return (req as AuthedRequest).identity;
+  }
+
+  private setupMcpHandlers(mcpServer: McpServer, identity?: Identity): void {
     const lowLevel = mcpServer.server;
 
     lowLevel.setRequestHandler(
@@ -264,7 +282,7 @@ export class Gateway {
         const toolName: string = request.params.name;
         const args: Record<string, unknown> = request.params.arguments ?? {};
 
-        if (isMuxToolName(toolName)) return this.handleMuxTool(toolName, args);
+        if (isMuxToolName(toolName)) return this.handleMuxTool(toolName, args, identity);
         // Direct (namespaced) path: a top-level `confirmed: true` authorizes a
         // write-class call exactly as the mux envelope does, and is stripped
         // before forwarding so the backend never sees the gateway's flag — keeps
@@ -272,7 +290,7 @@ export class Gateway {
         const directConfirmed = args.confirmed === true;
         const directArgs = directConfirmed ? { ...args } : args;
         if (directConfirmed) delete (directArgs as Record<string, unknown>).confirmed;
-        return this.dispatchToolCall(toolName, directArgs, { path: "direct", confirmed: directConfirmed });
+        return this.dispatchToolCall(toolName, directArgs, { path: "direct", confirmed: directConfirmed, identity });
       }
     );
 
@@ -408,6 +426,17 @@ export class Gateway {
   }
 
   private setupHttpRoutes(): void {
+    // Tool-plane authentication (auth.mode = entra): the gateway validates
+    // Entra-issued JWTs ITSELF on every tool-plane surface. Mounted before
+    // body parsing so unauthenticated requests are rejected cheaply. Edge-
+    // injected headers are never an authorization input — a bypassed edge
+    // fails to 401 here, not to silent access.
+    if (this.config.auth?.mode === "entra") {
+      const authMiddleware = createEntraAuthMiddleware(this.config.auth, this.logger);
+      this.app.use(["/mcp", "/sse", "/messages"], authMiddleware);
+      this.logger.info("Tool-plane auth enabled (Entra JWT) on /mcp, /sse, /messages");
+    }
+
     // Apply JSON parsing only to admin routes (not /messages — SSE transport reads raw body)
     this.app.use("/admin", express.json());
     this.app.use("/admin", this.requireAdminAccess.bind(this));
@@ -434,19 +463,29 @@ export class Gateway {
             });
             return;
           }
+          if (!this.requestMatchesSessionOwner(req, sessionId)) {
+            res.status(403).json({
+              jsonrpc: "2.0",
+              error: { code: -32003, message: "Session does not belong to the authenticated identity" },
+              id: null,
+            });
+            return;
+          }
           this.touchStreamableSession(sessionId);
         } else if (req.method === "POST" && isInitializeRequest(req.body)) {
+          const identity = this.requestIdentity(req);
           let initializedSessionId: string | undefined;
           transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (newSessionId) => {
               initializedSessionId = newSessionId;
               this.streamableTransports.set(newSessionId, transport!);
+              this.sessionOwners.set(newSessionId, identity?.oid ?? null);
               this.touchStreamableSession(newSessionId);
             },
           });
 
-          const sessionServer = this.createSessionServer();
+          const sessionServer = this.createSessionServer(identity);
           transport.onclose = () => {
             const sid = initializedSessionId ?? transport?.sessionId;
             if (sid) {
@@ -488,16 +527,19 @@ export class Gateway {
     // SSE endpoint for MCP clients
     this.app.get("/sse", async (req: Request, res: Response) => {
       this.logger.info(`New SSE connection from ${req.ip}`);
+      const identity = this.requestIdentity(req);
       const transport = new SSEServerTransport("/messages", res);
       const sessionId = transport.sessionId;
       this.sseTransports.set(sessionId, transport);
+      this.sessionOwners.set(sessionId, identity?.oid ?? null);
 
-      const sessionServer = this.createSessionServer();
+      const sessionServer = this.createSessionServer(identity);
       this.sessions.set(sessionId, sessionServer);
 
       transport.onclose = () => {
         this.sseTransports.delete(sessionId);
         this.sessions.delete(sessionId);
+        this.sessionOwners.delete(sessionId);
         this.logger.debug(`SSE session ${sessionId} closed`);
       };
 
@@ -510,6 +552,12 @@ export class Gateway {
       const transport = this.sseTransports.get(sessionId);
       if (!transport) {
         res.status(404).json({ error: "Session not found" });
+        return;
+      }
+      // Session-owner binding (N2): with auth on, possessing a sessionId is
+      // not authorization — the caller's identity must match the creator's.
+      if (!this.requestMatchesSessionOwner(req, sessionId)) {
+        res.status(403).json({ error: "Session does not belong to the authenticated identity" });
         return;
       }
       await transport.handlePostMessage(req, res);
@@ -742,6 +790,19 @@ export class Gateway {
     return Array.isArray(value) ? value[0] : value;
   }
 
+  /**
+   * Session-owner binding check (N2). With auth.mode = none this always
+   * passes (no identity model). With auth on, the request's authenticated oid
+   * must equal the oid recorded when the session was created; an unknown
+   * session (no owner record) fails closed.
+   */
+  private requestMatchesSessionOwner(req: Request, sessionId: string): boolean {
+    if (this.config.auth?.mode !== "entra") return true;
+    if (!this.sessionOwners.has(sessionId)) return false;
+    const owner = this.sessionOwners.get(sessionId) ?? null;
+    return owner === (this.requestIdentity(req)?.oid ?? null);
+  }
+
   private async handleStatelessStreamableRequest(
     req: Request,
     res: Response
@@ -750,7 +811,9 @@ export class Gateway {
       sessionIdGenerator: undefined,
       enableJsonResponse: this.config.gateway.streamable_http_json_response,
     });
-    const sessionServer = this.createSessionServer();
+    // Stateless: identity rides per-request — each request's authenticated
+    // principal is captured for the lifetime of this one dispatch.
+    const sessionServer = this.createSessionServer(this.requestIdentity(req));
 
     try {
       await sessionServer.server.connect(transport);
@@ -806,7 +869,8 @@ export class Gateway {
 
   private async handleMuxTool(
     toolName: MuxToolName,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    identity?: Identity
   ): Promise<{ content: any[]; isError?: boolean }> {
     switch (toolName) {
       case MUX_TOOL_NAMES.searchTools:
@@ -839,6 +903,7 @@ export class Gateway {
         return this.dispatchToolCall(target, dispatchArgs, {
           path: "mux",
           confirmed,
+          identity,
           maxOutputChars: this.getCharLimit(args, "maxOutputChars"),
         });
       }
@@ -1369,7 +1434,7 @@ export class Gateway {
   private async dispatchToolCall(
     toolName: string,
     targetArgs: Record<string, unknown>,
-    opts: { path: "mux" | "direct"; confirmed: boolean; maxOutputChars?: number }
+    opts: { path: "mux" | "direct"; confirmed: boolean; identity?: Identity; maxOutputChars?: number }
   ): Promise<{ content: any[]; isError?: boolean }> {
     const entry = this.toolRegistry.resolve(toolName);
     const safety = entry?.safety;
@@ -1377,17 +1442,32 @@ export class Gateway {
     const decision = decideGate(safety, opts.confirmed, enforce);
 
     // C3: append-only safety decision log — one line per dispatch decision,
-    // emitted BEFORE dispatch so blocked calls are recorded too.
-    this.logSafetyDecision({
+    // emitted BEFORE dispatch so blocked calls are recorded too. FAIL-CLOSED
+    // (2026-06-10): if the audit record cannot be written, the dispatch is
+    // denied — no audit trail, no tool call.
+    const logged = this.logSafetyDecision({
       ts: new Date().toISOString(),
       path: opts.path,
+      user: opts.identity?.upn ?? opts.identity?.oid ?? null,
       tool: toolName,
       backend: entry?.backendName ?? null,
       safetyClass: safety?.safetyClass ?? null,
       source: safety?.source ?? null,
+      ...(safety?.writeGuard ? { writeGuard: safety.writeGuard } : {}),
       decision: decision.action,
       enforce,
     });
+    if (!logged) {
+      return {
+        ...this.jsonToolResult({
+          error: "audit_unavailable",
+          tool: toolName,
+          reason:
+            "The safety decision log is enabled but unwritable; dispatch denied (fail-closed audit). Fix the decision_log path or disk and retry.",
+        }),
+        isError: true,
+      };
+    }
 
     if (decision.action === "warn") {
       this.logger.warn({
@@ -1415,11 +1495,8 @@ export class Gateway {
         tool: toolName,
         safetyClass: decision.safetyClass,
         source: decision.source,
-        reason: `This tool is classified ${decision.safetyClass} and requires confirmed:true to authorize the call.`,
+        reason: `This tool is classified ${decision.safetyClass} and requires confirmation to authorize the call.`,
         redactedArguments: redacted,
-        ...(opts.path === "direct"
-          ? { remedy: "invoke via gateway_call_tool with confirmed:true" }
-          : {}),
       });
     }
 
@@ -1428,12 +1505,15 @@ export class Gateway {
 
   /**
    * C3: append one JSONL line to the configured safety decision log.
-   * Default-off (safety.decision_log.enabled = false). On any write error:
-   * logger.error once, then proceed — fail-open is the documented Phase-0 seed.
+   * Default-ON (safety.decision_log.enabled = true) and FAIL-CLOSED
+   * (2026-06-10): returns false on any write error, and dispatchToolCall
+   * denies the dispatch — an unauditable gateway does not execute tools.
+   * Returns true when the line was written, or when logging is explicitly
+   * disabled (operator opt-out).
    */
-  private logSafetyDecision(line: Record<string, unknown>): void {
+  private logSafetyDecision(line: Record<string, unknown>): boolean {
     const cfg = this.config.safety.decision_log;
-    if (!cfg?.enabled) return;
+    if (!cfg?.enabled) return true;
     try {
       let logPath = cfg.path;
       if (logPath.startsWith("~")) {
@@ -1444,13 +1524,15 @@ export class Gateway {
         this.decisionLogDirReady = true;
       }
       appendFileSync(logPath, `${JSON.stringify(line)}\n`);
+      return true;
     } catch (err) {
       if (!this.decisionLogErrorLogged) {
         this.logger.error(
-          `Safety decision log write failed (proceeding without logging — fail-open): ${err instanceof Error ? err.message : String(err)}`
+          `Safety decision log write failed — denying dispatches until writable (fail-closed audit): ${err instanceof Error ? err.message : String(err)}`
         );
         this.decisionLogErrorLogged = true;
       }
+      return false;
     }
   }
 
@@ -1671,6 +1753,7 @@ export class Gateway {
     this.streamableTransports.delete(sessionId);
     this.streamableSessionLastSeen.delete(sessionId);
     this.sessions.delete(sessionId);
+    this.sessionOwners.delete(sessionId);
   }
 
   private async reapIdleStreamableSessions(now = Date.now()): Promise<void> {
@@ -1798,7 +1881,8 @@ export class Gateway {
     const configuredToken = process.env.MCP_GATEWAY_ADMIN_TOKEN;
     if (configuredToken) {
       const expected = `Bearer ${configuredToken}`;
-      if (req.header("authorization") === expected) {
+      const provided = req.header("authorization") ?? "";
+      if (this.timingSafeStringEqual(provided, expected)) {
         next();
         return;
       }
@@ -1816,6 +1900,16 @@ export class Gateway {
       error:
         "Admin API is restricted to loopback clients unless MCP_GATEWAY_ADMIN_TOKEN is set",
     });
+  }
+
+  /**
+   * Constant-time string comparison via fixed-length sha256 digests —
+   * timingSafeEqual alone throws on length mismatch, which itself leaks length.
+   */
+  private timingSafeStringEqual(a: string, b: string): boolean {
+    const digestA = createHash("sha256").update(a).digest();
+    const digestB = createHash("sha256").update(b).digest();
+    return timingSafeEqual(digestA, digestB);
   }
 
   private isLoopbackAddress(address: string): boolean {
@@ -1992,7 +2086,27 @@ export class Gateway {
       `Starting MCP Gateway "${this.config.gateway.name}" on ${this.config.gateway.host}:${this.config.gateway.port}`
     );
 
-    // Connect all statically-configured backends
+    // Bind the HTTP listener FIRST so the gateway is responsive immediately. A
+    // slow or failing backend connect (a dead backend can take its full connect
+    // timeout) must NEVER delay accepting requests — previously the listener was
+    // bound LAST, after awaiting every backend connect, so a few dead backends
+    // left the whole gateway unresponsive for minutes on cold start. Requests to
+    // a backend that has not connected yet get an honest "not connected" error
+    // until it comes up.
+    await new Promise<void>((resolve) => {
+      this.httpServer = this.app.listen(this.config.gateway.port, this.config.gateway.host, () => {
+        this.logger.info(
+          `MCP Gateway listening on http://${this.config.gateway.host}:${this.config.gateway.port}`
+        );
+        this.logger.info(`  Streamable HTTP endpoint: /mcp`);
+        this.logger.info(`  SSE endpoint:             /sse`);
+        this.logger.info(`  Admin API:    /admin/status`);
+        resolve();
+      });
+    });
+
+    // Connect all statically-configured backends (parallel). The listener is
+    // already up, so this no longer blocks request serving.
     const entries = Object.entries(this.config.backends);
     this.logger.info(`Connecting ${entries.length} static backend(s)...`);
 
@@ -2033,19 +2147,6 @@ export class Gateway {
           `Config reload failed: ${err instanceof Error ? err.message : String(err)}`
         );
       }
-    });
-
-    // Start HTTP server
-    return new Promise((resolve) => {
-      this.httpServer = this.app.listen(this.config.gateway.port, this.config.gateway.host, () => {
-        this.logger.info(
-          `MCP Gateway listening on http://${this.config.gateway.host}:${this.config.gateway.port}`
-        );
-        this.logger.info(`  Streamable HTTP endpoint: /mcp`);
-        this.logger.info(`  SSE endpoint:             /sse`);
-        this.logger.info(`  Admin API:    /admin/status`);
-        resolve();
-      });
     });
   }
 
